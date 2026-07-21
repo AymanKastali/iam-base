@@ -250,7 +250,7 @@ git commit -m "feat(config): add env-based config loading"
 - Test: `internal/identity/domain/credential_test.go`
 
 **Interfaces:**
-- Produces: `domain.Email` (`NewEmail(raw string) (Email, error)`, `(Email) String() string`), `domain.Credential` (`NewCredential(hash, algo string, version int) (Credential, error)`, `(Credential) Hash/Algo() string`, `(Credential) Version() int`), sentinel errors `ErrInvalidEmail`, `ErrInvalidCredential`.
+- Produces: `domain.Email` (`NewEmail(raw string) (Email, error)`, `(Email) String() string`), `domain.Credential` (`NewCredential(hash, alg string, version int) (Credential, error)`, `(Credential) Hash/Alg() string`, `(Credential) Version() int`), sentinel errors `ErrInvalidEmail`, `ErrInvalidCredential`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -299,15 +299,15 @@ func TestNewCredential(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewCredential() error = %v, want nil", err)
 	}
-	if c.Hash() != "hash" || c.Algo() != "argon2id" || c.Version() != 1 {
-		t.Errorf("got %+v, want hash=hash algo=argon2id version=1", c)
+	if c.Hash() != "hash" || c.Alg() != "argon2id" || c.Version() != 1 {
+		t.Errorf("got %+v, want hash=hash alg=argon2id version=1", c)
 	}
 
 	if _, err := NewCredential("", "argon2id", 1); err == nil {
 		t.Error("NewCredential() with empty hash: error = nil, want error")
 	}
 	if _, err := NewCredential("hash", "", 1); err == nil {
-		t.Error("NewCredential() with empty algo: error = nil, want error")
+		t.Error("NewCredential() with empty alg: error = nil, want error")
 	}
 }
 ```
@@ -374,20 +374,20 @@ package domain
 
 type Credential struct {
 	hash    string
-	algo    string
+	alg     string
 	version int
 }
 
-func NewCredential(hash, algo string, version int) (Credential, error) {
-	if hash == "" || algo == "" || version < 1 {
+func NewCredential(hash, alg string, version int) (Credential, error) {
+	if hash == "" || alg == "" || version < 1 {
 		return Credential{}, ErrInvalidCredential
 	}
-	return Credential{hash: hash, algo: algo, version: version}, nil
+	return Credential{hash: hash, alg: alg, version: version}, nil
 }
 
-func (c Credential) Hash() string  { return c.hash }
-func (c Credential) Algo() string  { return c.algo }
-func (c Credential) Version() int  { return c.version }
+func (c Credential) Hash() string { return c.hash }
+func (c Credential) Alg() string  { return c.alg }
+func (c Credential) Version() int { return c.version }
 ```
 
 - [ ] **Step 4: Run tests to verify they pass**
@@ -421,6 +421,7 @@ git commit -m "feat(domain): add Email and Credential value objects"
 - Test: `internal/identity/domain/entity_test.go`
 - Test: `internal/identity/domain/aggregate_root_test.go`
 - Test: `internal/identity/domain/account_id_test.go`
+- Test: `internal/identity/domain/account_status_test.go`
 - Test: `internal/identity/domain/account_test.go`
 
 **Interfaces:**
@@ -531,6 +532,52 @@ func TestAccountID_Equals(t *testing.T) {
 	}
 	if a.Equals(c) {
 		t.Error("Equals() = true for different IDs, want false")
+	}
+}
+```
+
+```go
+// internal/identity/domain/account_status_test.go
+package domain
+
+import (
+	"errors"
+	"testing"
+)
+
+func TestAccountStatus_String(t *testing.T) {
+	if got := StatusActive.String(); got != "active" {
+		t.Errorf("StatusActive.String() = %q, want %q", got, "active")
+	}
+	if got := StatusDisabled.String(); got != "disabled" {
+		t.Errorf("StatusDisabled.String() = %q, want %q", got, "disabled")
+	}
+}
+
+func TestParseAccountStatus(t *testing.T) {
+	got, err := ParseAccountStatus("active")
+	if err != nil || got != StatusActive {
+		t.Errorf("ParseAccountStatus(%q) = %v, %v, want StatusActive, nil", "active", got, err)
+	}
+
+	got, err = ParseAccountStatus("disabled")
+	if err != nil || got != StatusDisabled {
+		t.Errorf("ParseAccountStatus(%q) = %v, %v, want StatusDisabled, nil", "disabled", got, err)
+	}
+}
+
+func TestParseAccountStatus_RejectsUnrecognizedValue(t *testing.T) {
+	if _, err := ParseAccountStatus("archived"); !errors.Is(err, ErrInvalidAccountStatus) {
+		t.Errorf("ParseAccountStatus(%q) error = %v, want ErrInvalidAccountStatus", "archived", err)
+	}
+}
+
+func TestAccountStatus_StringAndParse_RoundTrip(t *testing.T) {
+	for _, s := range []AccountStatus{StatusActive, StatusDisabled} {
+		got, err := ParseAccountStatus(s.String())
+		if err != nil || got != s {
+			t.Errorf("ParseAccountStatus(%q.String()) = %v, %v, want %v, nil", s, got, err, s)
+		}
 	}
 }
 ```
@@ -987,7 +1034,7 @@ Add to `internal/identity/domain/credential.go` (implements `ValueObject[Credent
 ```go
 var _ ValueObject[Credential] = Credential{}   // next to the Credential struct declaration
 
-func (c Credential) Equals(other Credential) bool {   // next to the Hash/Algo/Version accessors
+func (c Credential) Equals(other Credential) bool {   // next to the Hash/Alg/Version accessors
 	return c.hash == other.hash && c.alg == other.alg && c.version == other.version
 }
 ```
@@ -1000,7 +1047,7 @@ Expected: PASS
 - [ ] **Step 5: Commit**
 
 ```bash
-git add internal/identity/domain/value_object.go internal/identity/domain/entity.go internal/identity/domain/event.go internal/identity/domain/aggregate_root.go internal/identity/domain/events.go internal/identity/domain/account_id.go internal/identity/domain/account_status.go internal/identity/domain/account.go internal/identity/domain/errors.go internal/identity/domain/email.go internal/identity/domain/credential.go internal/identity/domain/entity_test.go internal/identity/domain/aggregate_root_test.go internal/identity/domain/account_id_test.go internal/identity/domain/account_test.go
+git add internal/identity/domain/value_object.go internal/identity/domain/entity.go internal/identity/domain/event.go internal/identity/domain/aggregate_root.go internal/identity/domain/events.go internal/identity/domain/account_id.go internal/identity/domain/account_status.go internal/identity/domain/account.go internal/identity/domain/errors.go internal/identity/domain/email.go internal/identity/domain/credential.go internal/identity/domain/entity_test.go internal/identity/domain/aggregate_root_test.go internal/identity/domain/account_id_test.go internal/identity/domain/account_status_test.go internal/identity/domain/account_test.go
 git commit -m "feat(domain): add Entity/AggregateRoot/Event/ValueObject kernel and Account aggregate"
 ```
 
@@ -1074,8 +1121,8 @@ func TestArgon2IDHasher_HashAndVerify(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Hash() error = %v, want nil", err)
 	}
-	if cred.Algo() != "argon2id" {
-		t.Errorf("Algo() = %q, want argon2id", cred.Algo())
+	if cred.Alg() != "argon2id" {
+		t.Errorf("Alg() = %q, want argon2id", cred.Alg())
 	}
 
 	ok, err := h.Verify(cred, "correct horse battery staple")
@@ -1111,7 +1158,7 @@ import (
 	"github.com/AymanKastali/iam-base/internal/identity/domain"
 )
 
-const algoName = "argon2id"
+const algName = "argon2id"
 const credentialVersion = 1
 
 type Argon2IDHasher struct{}
@@ -1121,7 +1168,7 @@ func (Argon2IDHasher) Hash(password string) (domain.Credential, error) {
 	if err != nil {
 		return domain.Credential{}, err
 	}
-	return domain.NewCredential(hash, algoName, credentialVersion)
+	return domain.NewCredential(hash, algName, credentialVersion)
 }
 
 func (Argon2IDHasher) Verify(credential domain.Credential, password string) (bool, error) {
@@ -1163,7 +1210,7 @@ CREATE TABLE accounts (
     id UUID PRIMARY KEY,
     email TEXT NOT NULL UNIQUE,
     credential_hash TEXT NOT NULL,
-    credential_algo TEXT NOT NULL,
+    credential_alg TEXT NOT NULL,
     credential_version INT NOT NULL,
     status TEXT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -1189,10 +1236,11 @@ package postgres
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/golang-migrate/migrate/v4"
-	"github.com/golang-migrate/migrate/v4/database/pgx/v5"
+	_ "github.com/golang-migrate/migrate/v4/database/pgx/v5"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -1220,8 +1268,12 @@ func newTestRepo(t *testing.T) *AccountRepository {
 	if err != nil {
 		t.Fatalf("connection string: %v", err)
 	}
+	// The pgx/v5 migrate driver registers under the "pgx5" scheme, not
+	// "postgres" — rewrite the DSN's scheme for migrate.New; pgxpool.New
+	// below still takes the original postgres:// DSN.
+	migrateDSN := "pgx5://" + strings.TrimPrefix(dsn, "postgres://")
 
-	m, err := migrate.New("file://migrations", dsn)
+	m, err := migrate.New("file://migrations", migrateDSN)
 	if err != nil {
 		t.Fatalf("migrate.New: %v", err)
 	}
@@ -1342,12 +1394,16 @@ Expected: FAIL — `AccountRepository` undefined (requires Docker available for 
 
 ```go
 // internal/identity/infra/postgres/account_repo.go
+
+// Package postgres provides the Postgres adapter for the identity module's
+// write-repository port (domain.AccountRepository).
 package postgres
 
 import (
 	"context"
 	"errors"
 
+	"github.com/jackc/pgerrcode"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -1365,20 +1421,20 @@ func NewAccountRepository(pool *pgxpool.Pool) *AccountRepository {
 
 func (r *AccountRepository) Save(ctx context.Context, account *domain.Account) error {
 	const q = `
-		INSERT INTO accounts (id, email, credential_hash, credential_algo, credential_version, status)
+		INSERT INTO accounts (id, email, credential_hash, credential_alg, credential_version, status)
 		VALUES ($1, $2, $3, $4, $5, $6)
 	`
 	_, err := r.pool.Exec(ctx, q,
 		account.ID().String(),
 		account.Email().String(),
 		account.Credential().Hash(),
-		account.Credential().Algo(),
+		account.Credential().Alg(),
 		account.Credential().Version(),
 		account.Status().String(),
 	)
 	if err != nil {
 		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+		if errors.As(err, &pgErr) && pgErr.Code == pgerrcode.UniqueViolation {
 			return domain.ErrEmailAlreadyRegistered
 		}
 		return err
@@ -1388,14 +1444,14 @@ func (r *AccountRepository) Save(ctx context.Context, account *domain.Account) e
 
 func (r *AccountRepository) FindByEmail(ctx context.Context, email domain.Email) (*domain.Account, error) {
 	const q = `
-		SELECT id, email, credential_hash, credential_algo, credential_version, status
+		SELECT id, email, credential_hash, credential_alg, credential_version, status
 		FROM accounts WHERE email = $1
 	`
 	var (
-		id, emailStr, hash, algo, status string
+		id, emailStr, hash, alg, status string
 		version                          int
 	)
-	err := r.pool.QueryRow(ctx, q, email.String()).Scan(&id, &emailStr, &hash, &algo, &version, &status)
+	err := r.pool.QueryRow(ctx, q, email.String()).Scan(&id, &emailStr, &hash, &alg, &version, &status)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, domain.ErrAccountNotFound
@@ -1407,7 +1463,7 @@ func (r *AccountRepository) FindByEmail(ctx context.Context, email domain.Email)
 	if err != nil {
 		return nil, err
 	}
-	cred, err := domain.NewCredential(hash, algo, version)
+	cred, err := domain.NewCredential(hash, alg, version)
 	if err != nil {
 		return nil, err
 	}
