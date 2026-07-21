@@ -425,7 +425,7 @@ git commit -m "feat(domain): add Email and Credential value objects"
 
 **Interfaces:**
 - Consumes: `domain.Email`, `domain.Credential` (Task 2).
-- Produces: the shared domain kernel (`ValueObject[T]`, `Entity[ID]`, `AggregateRoot[ID]`, `Event`) described in Global Constraints; `domain.AccountID` (self-validating value object: `NewAccountID(raw string) (AccountID, error)`, `(AccountID) String() string`, `(AccountID) Equals(other AccountID) bool`); `domain.AccountStatus` (`int`, consts `StatusActive`, `StatusDisabled`); `domain.AccountRegistered`/`AccountDisabled`/`AccountActivated` (events, all in `events.go`); `domain.Account` (embeds `AggregateRoot[AccountID]` — `ID()`/`Equals()` inherited, not redeclared; `Register(id AccountID, email Email, credential Credential) (*Account, error)` trusts `id` is already valid and records an `AccountRegistered` event; `(*Account) Email/Credential/Status()`, `(*Account) IsActive() bool`; **guarded state transitions**, not bare setters — `Disable() error` and `Activate() error` each reject the illegal no-op transition (`ErrAccountAlreadyDisabled`/`ErrAccountAlreadyActive`) and record their own past-tense event on success; `EnsureActive() error` encapsulates the login-eligibility rule — the app layer asks the aggregate, it never inspects `IsActive()` itself and decides the policy inline); `domain.ErrInvalidAccountID`/`ErrAccountAlreadyDisabled`/`ErrAccountAlreadyActive`.
+- Produces: the shared domain kernel (`ValueObject[T]`, `Entity[ID]`, `AggregateRoot[ID]`, `Event`) described in Global Constraints; `domain.AccountID` (self-validating value object: `NewAccountID(raw string) (AccountID, error)`, `(AccountID) String() string`, `(AccountID) Equals(other AccountID) bool`); `domain.AccountStatus` (`int`, consts `StatusActive`, `StatusDisabled`, `(AccountStatus) String() string` and `ParseAccountStatus(raw string) (AccountStatus, error)` — the persistence round-trip pair infra adapters use instead of hand-rolling their own conversion); `domain.AccountRegistered`/`AccountDisabled`/`AccountActivated` (events, all in `events.go`); `domain.Account` (embeds `AggregateRoot[AccountID]` — `ID()`/`Equals()` inherited, not redeclared; `Register(id AccountID, email Email, credential Credential) (*Account, error)` trusts `id` is already valid and records an `AccountRegistered` event; `Reconstitute(id AccountID, email Email, credential Credential, status AccountStatus) *Account` rehydrates an account already known to exist — used by the repository adapter, raises no event, and preserves whatever status was persisted (unlike `Register`, which always starts `StatusActive`); `(*Account) Email/Credential/Status()`, `(*Account) IsActive() bool`; **guarded state transitions**, not bare setters — `Disable() error` and `Activate() error` each reject the illegal no-op transition (`ErrAccountAlreadyDisabled`/`ErrAccountAlreadyActive`) and record their own past-tense event on success; `EnsureActive() error` encapsulates the login-eligibility rule — the app layer asks the aggregate, it never inspects `IsActive()` itself and decides the policy inline); `domain.ErrInvalidAccountID`/`ErrAccountAlreadyDisabled`/`ErrAccountAlreadyActive`/`ErrInvalidAccountStatus`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -821,6 +821,27 @@ const (
 	StatusActive AccountStatus = iota
 	StatusDisabled
 )
+
+func (s AccountStatus) String() string {
+	if s == StatusDisabled {
+		return "disabled"
+	}
+	return "active"
+}
+
+// ParseAccountStatus parses AccountStatus.String()'s output back into an
+// AccountStatus — the repository adapter's counterpart for rehydrating a
+// persisted account.
+func ParseAccountStatus(raw string) (AccountStatus, error) {
+	switch raw {
+	case "active":
+		return StatusActive, nil
+	case "disabled":
+		return StatusDisabled, nil
+	default:
+		return 0, ErrInvalidAccountStatus
+	}
+}
 ```
 
 ```go
@@ -889,6 +910,18 @@ func Register(id AccountID, email Email, credential Credential) (*Account, error
 	return account, nil
 }
 
+// Reconstitute rebuilds an Account already known to exist — loaded from
+// storage, not newly created — so, unlike Register, it does not raise
+// AccountRegistered. The repository adapter is the only expected caller.
+func Reconstitute(id AccountID, email Email, credential Credential, status AccountStatus) *Account {
+	return &Account{
+		AggregateRoot: NewAggregateRoot(id),
+		email:         email,
+		credential:    credential,
+		status:        status,
+	}
+}
+
 func (a *Account) Email() Email           { return a.email }
 func (a *Account) Credential() Credential { return a.credential }
 func (a *Account) Status() AccountStatus  { return a.status }
@@ -936,6 +969,7 @@ Add to `internal/identity/domain/errors.go`'s existing `var (...)` block from Ta
 ErrInvalidAccountID       = errors.New("invalid account id")
 ErrAccountAlreadyDisabled = errors.New("account already disabled")
 ErrAccountAlreadyActive   = errors.New("account already active")
+ErrInvalidAccountStatus   = errors.New("invalid account status")
 ```
 
 Add to `internal/identity/domain/email.go` (implements `ValueObject[Email]`):
@@ -1241,6 +1275,33 @@ func TestAccountRepository_SaveAndFindByEmail(t *testing.T) {
 	if found.ID() != acc.ID() {
 		t.Errorf("FindByEmail().ID() = %v, want %v", found.ID(), acc.ID())
 	}
+	if found.Status() != acc.Status() || !found.IsActive() {
+		t.Errorf("FindByEmail().Status() = %v, want %v (active)", found.Status(), acc.Status())
+	}
+}
+
+func TestAccountRepository_FindByEmail_PreservesDisabledStatus(t *testing.T) {
+	repo := newTestRepo(t)
+	ctx := context.Background()
+	acc := newTestAccount(t, "disabled@b.com")
+	if err := acc.Disable(); err != nil {
+		t.Fatalf("fixture Disable: %v", err)
+	}
+
+	if err := repo.Save(ctx, acc); err != nil {
+		t.Fatalf("Save() error = %v, want nil", err)
+	}
+
+	found, err := repo.FindByEmail(ctx, acc.Email())
+	if err != nil {
+		t.Fatalf("FindByEmail() error = %v, want nil", err)
+	}
+	if found.Status() != domain.StatusDisabled || found.IsActive() {
+		t.Errorf("FindByEmail().Status() = %v, want StatusDisabled — a disabled account must not silently reactivate on load", found.Status())
+	}
+	if events := found.RecordedEvents(); len(events) != 0 {
+		t.Errorf("FindByEmail() recorded %d events, want 0 — loading is not a new registration", len(events))
+	}
 }
 
 func TestAccountRepository_Save_DuplicateEmail(t *testing.T) {
@@ -1308,12 +1369,12 @@ func (r *AccountRepository) Save(ctx context.Context, account *domain.Account) e
 		VALUES ($1, $2, $3, $4, $5, $6)
 	`
 	_, err := r.pool.Exec(ctx, q,
-		string(account.ID()),
+		account.ID().String(),
 		account.Email().String(),
 		account.Credential().Hash(),
 		account.Credential().Algo(),
 		account.Credential().Version(),
-		statusString(account.Status()),
+		account.Status().String(),
 	)
 	if err != nil {
 		var pgErr *pgconn.PgError
@@ -1354,16 +1415,15 @@ func (r *AccountRepository) FindByEmail(ctx context.Context, email domain.Email)
 	if err != nil {
 		return nil, err
 	}
-	return domain.Register(accountID, e, cred)
-}
-
-func statusString(s domain.AccountStatus) string {
-	if s == domain.StatusDisabled {
-		return "disabled"
+	accountStatus, err := domain.ParseAccountStatus(status)
+	if err != nil {
+		return nil, err
 	}
-	return "active"
+	return domain.Reconstitute(accountID, e, cred, accountStatus), nil
 }
 ```
+
+`FindByEmail` uses `domain.Reconstitute`, not `domain.Register` — rehydrating a row from storage is not a new registration, so it must not raise `AccountRegistered` or force the status back to active. `Save`/`FindByEmail` round-trip the actual `AccountStatus` via `.String()`/`ParseAccountStatus` — a disabled account must come back disabled, not silently reactivate.
 
 - [ ] **Step 5: Run test to verify it passes**
 
