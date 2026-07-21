@@ -8,6 +8,8 @@ type Email struct {
 	value string
 }
 
+var _ ValueObject[Email] = Email{}
+
 func NewEmail(raw string) (Email, error) {
 	normalized, err := normalizeEmail(raw)
 	if err != nil {
@@ -21,6 +23,10 @@ func NewEmail(raw string) (Email, error) {
 
 func (e Email) String() string {
 	return e.value
+}
+
+func (e Email) Equals(other Email) bool {
+	return e.value == other.value
 }
 
 // normalizeEmail trims whitespace and converts to lowercase.

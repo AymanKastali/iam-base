@@ -8,4 +8,5 @@ var (
 	ErrEmailAlreadyRegistered = errors.New("email already registered")
 	ErrAccountNotFound        = errors.New("account not found")
 	ErrAccountDisabled        = errors.New("account disabled")
+	ErrInvalidAccountID       = errors.New("invalid account id")
 )

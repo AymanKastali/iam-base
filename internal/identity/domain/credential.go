@@ -6,6 +6,8 @@ type Credential struct {
 	version int
 }
 
+var _ ValueObject[Credential] = Credential{}
+
 func NewCredential(hash, alg string, version int) (Credential, error) {
 	if err := validateCredentialHash(hash); err != nil {
 		return Credential{}, err
@@ -22,6 +24,10 @@ func NewCredential(hash, alg string, version int) (Credential, error) {
 func (c Credential) Hash() string { return c.hash }
 func (c Credential) Algo() string { return c.alg }
 func (c Credential) Version() int { return c.version }
+
+func (c Credential) Equals(other Credential) bool {
+	return c.hash == other.hash && c.alg == other.alg && c.version == other.version
+}
 
 // validateCredentialHash checks that hash is not empty.
 func validateCredentialHash(hash string) error {
