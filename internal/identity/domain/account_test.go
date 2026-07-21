@@ -48,6 +48,24 @@ func TestRegister_RecordsAccountRegisteredEvent(t *testing.T) {
 	}
 }
 
+func TestReconstitute(t *testing.T) {
+	email, _ := NewEmail("a@b.com")
+	cred, _ := NewCredential("hash", "argon2id", 1)
+	id, _ := NewAccountID("11111111-1111-1111-1111-111111111111")
+
+	acc := Reconstitute(id, email, cred, StatusDisabled)
+
+	if acc.ID() != id || acc.Email() != email || acc.Credential() != cred {
+		t.Errorf("Reconstitute() = %+v, want id=%v email=%v credential=%v", acc, id, email, cred)
+	}
+	if acc.Status() != StatusDisabled || acc.IsActive() {
+		t.Error("Reconstitute() must preserve the given status, not default to active")
+	}
+	if events := acc.RecordedEvents(); len(events) != 0 {
+		t.Errorf("Reconstitute() recorded %d events, want 0 — reconstitution is not a new fact", len(events))
+	}
+}
+
 func newTestAccount(t *testing.T) *Account {
 	t.Helper()
 	email, _ := NewEmail("a@b.com")

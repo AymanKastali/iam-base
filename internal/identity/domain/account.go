@@ -21,6 +21,18 @@ func Register(id AccountID, email Email, credential Credential) (*Account, error
 	return account, nil
 }
 
+// Reconstitute rebuilds an Account already known to exist — loaded from
+// storage, not newly created — so, unlike Register, it does not raise
+// AccountRegistered. The repository adapter is the only expected caller.
+func Reconstitute(id AccountID, email Email, credential Credential, status AccountStatus) *Account {
+	return &Account{
+		AggregateRoot: NewAggregateRoot(id),
+		email:         email,
+		credential:    credential,
+		status:        status,
+	}
+}
+
 func (a *Account) Email() Email           { return a.email }
 func (a *Account) Credential() Credential { return a.credential }
 func (a *Account) Status() AccountStatus  { return a.status }
