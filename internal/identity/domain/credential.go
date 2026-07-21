@@ -19,9 +19,9 @@ func NewCredential(hash, alg string, version int) (Credential, error) {
 	return Credential{hash: hash, alg: alg, version: version}, nil
 }
 
-func (c Credential) Hash() string  { return c.hash }
-func (c Credential) Algo() string  { return c.alg }
-func (c Credential) Version() int  { return c.version }
+func (c Credential) Hash() string { return c.hash }
+func (c Credential) Algo() string { return c.alg }
+func (c Credential) Version() int { return c.version }
 
 // validateCredentialHash checks that hash is not empty.
 func validateCredentialHash(hash string) error {

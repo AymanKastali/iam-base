@@ -1,23 +1,11 @@
 package domain
 
-// DomainError represents an error originating from the domain layer.
-type DomainError struct {
-	message string
-}
-
-func (e *DomainError) Error() string {
-	return e.message
-}
-
-// NewDomainError creates a new domain error with the given message.
-func NewDomainError(message string) *DomainError {
-	return &DomainError{message: message}
-}
+import "errors"
 
 var (
-	ErrInvalidEmail           = NewDomainError("invalid email")
-	ErrInvalidCredential      = NewDomainError("invalid credential")
-	ErrEmailAlreadyRegistered = NewDomainError("email already registered")
-	ErrAccountNotFound        = NewDomainError("account not found")
-	ErrAccountDisabled        = NewDomainError("account disabled")
+	ErrInvalidEmail           = errors.New("invalid email")
+	ErrInvalidCredential      = errors.New("invalid credential")
+	ErrEmailAlreadyRegistered = errors.New("email already registered")
+	ErrAccountNotFound        = errors.New("account not found")
+	ErrAccountDisabled        = errors.New("account disabled")
 )
