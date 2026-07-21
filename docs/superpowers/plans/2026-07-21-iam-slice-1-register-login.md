@@ -1,0 +1,2236 @@
+# IAM Base Service — Slice 1 (Register & Login) Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Stand up the first vertical slice of the `iam-base` Identity service — register, login (access-token-only JWT), and JWKS — deployable via Docker Compose end to end.
+
+**Architecture:** Single Go module, one bounded context (`identity`), internally hexagonal (`domain` / `app` / `infra`), per `docs/design/iam-base-service.md`. Tactical DDD on the `Account` aggregate only (the one aggregate this slice touches); `RefreshTokenFamily` is out of scope (slice 2).
+
+**Tech Stack:** Go 1.26, `github.com/jackc/pgx/v5` (Postgres), `github.com/golang-migrate/migrate/v4` (migrations), `github.com/golang-jwt/jwt/v5` (JWT, RS256), `github.com/alexedwards/argon2id` (password hashing), `github.com/go-chi/chi/v5` (routing), `golang.org/x/time/rate` (rate limiting), `github.com/google/uuid` (IDs), Postgres 16, Docker Compose.
+
+## Global Constraints
+
+- Go module path: `github.com/AymanKastali/iam-base`, `go 1.26` in `go.mod`.
+- JWT signing algorithm: **RS256**. Access token TTL: **15 minutes**, configurable via env, default 15m.
+- Rate limiting: in-process per-IP limiter (`golang.org/x/time/rate`) on `POST /v1/auth/register` and `POST /v1/auth/login` only.
+- Domain layer (`internal/identity/domain`) imports nothing but the stdlib and `github.com/google/uuid` — no DB, clock, or HTTP.
+- Every domain construction failure returns a typed domain error, never a panic.
+- Tests: unit tests for `domain`/`app` (fakes/stubs for ports, no real Postgres); the repository test in Task 5 runs against a real Postgres via `testcontainers-go` (per `backend-testing` — no mocked DB).
+- No code beyond this slice's scope (no refresh tokens, no email verification, no password reset — those are slice 2 / phase 2).
+
+---
+
+## File Structure
+
+```
+go.mod
+internal/
+  config/
+    config.go
+    config_test.go
+  identity/
+    domain/
+      email.go
+      credential.go
+      account.go
+      errors.go
+      email_test.go
+      credential_test.go
+      account_test.go
+    app/
+      ports.go
+      command/
+        register.go
+        register_test.go
+        login.go
+        login_test.go
+      query/
+        jwks.go
+        jwks_test.go
+    infra/
+      passwordhash/
+        argon2.go
+        argon2_test.go
+      jwt/
+        issuer.go
+        issuer_test.go
+      postgres/
+        account_repo.go
+        account_repo_test.go
+        migrations/
+          000001_create_accounts.up.sql
+          000001_create_accounts.down.sql
+      httpapi/
+        ratelimit.go
+        ratelimit_test.go
+        register_handler.go
+        register_handler_test.go
+        login_handler.go
+        login_handler_test.go
+        jwks_handler.go
+        jwks_handler_test.go
+        router.go
+cmd/
+  server/
+    main.go
+deployments/
+  Dockerfile
+  docker-compose.yml
+```
+
+---
+
+### Task 1: Go module, config loading
+
+**Files:**
+- Create: `go.mod`
+- Create: `internal/config/config.go`
+- Test: `internal/config/config_test.go`
+
+**Interfaces:**
+- Produces: `config.Config{Port, DatabaseURL, JWTPrivateKeyPath, JWTKeyID string; AccessTokenTTL time.Duration; RateLimitRPS float64; RateLimitBurst int}`, `config.Load() (Config, error)`.
+
+- [ ] **Step 1: Initialize the module**
+
+Run:
+```bash
+go mod init github.com/AymanKastali/iam-base
+```
+
+- [ ] **Step 2: Write the failing test**
+
+```go
+// internal/config/config_test.go
+package config
+
+import (
+	"testing"
+	"time"
+)
+
+func TestLoad_Defaults(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://user:pass@localhost:5432/iam?sslmode=disable")
+	t.Setenv("JWT_PRIVATE_KEY_PATH", "/etc/iam/private.pem")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v, want nil", err)
+	}
+	if cfg.Port != "8080" {
+		t.Errorf("Port = %q, want %q", cfg.Port, "8080")
+	}
+	if cfg.AccessTokenTTL != 15*time.Minute {
+		t.Errorf("AccessTokenTTL = %v, want 15m", cfg.AccessTokenTTL)
+	}
+	if cfg.JWTKeyID != "1" {
+		t.Errorf("JWTKeyID = %q, want %q", cfg.JWTKeyID, "1")
+	}
+	if cfg.RateLimitRPS != 5 || cfg.RateLimitBurst != 10 {
+		t.Errorf("rate limit = %v/%v, want 5/10", cfg.RateLimitRPS, cfg.RateLimitBurst)
+	}
+}
+
+func TestLoad_MissingRequired(t *testing.T) {
+	t.Setenv("DATABASE_URL", "")
+	t.Setenv("JWT_PRIVATE_KEY_PATH", "")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("Load() error = nil, want error for missing DATABASE_URL/JWT_PRIVATE_KEY_PATH")
+	}
+}
+```
+
+- [ ] **Step 3: Run test to verify it fails**
+
+Run: `go test ./internal/config/... -run TestLoad -v`
+Expected: FAIL — `config.Load` undefined.
+
+- [ ] **Step 4: Write minimal implementation**
+
+```go
+// internal/config/config.go
+package config
+
+import (
+	"errors"
+	"fmt"
+	"os"
+	"strconv"
+	"time"
+)
+
+type Config struct {
+	Port              string
+	DatabaseURL       string
+	JWTPrivateKeyPath string
+	JWTKeyID          string
+	AccessTokenTTL    time.Duration
+	RateLimitRPS      float64
+	RateLimitBurst    int
+}
+
+func Load() (Config, error) {
+	cfg := Config{
+		Port:           getEnv("PORT", "8080"),
+		DatabaseURL:    os.Getenv("DATABASE_URL"),
+		JWTKeyID:       getEnv("JWT_KEY_ID", "1"),
+		AccessTokenTTL: 15 * time.Minute,
+		RateLimitRPS:   5,
+		RateLimitBurst: 10,
+	}
+	cfg.JWTPrivateKeyPath = os.Getenv("JWT_PRIVATE_KEY_PATH")
+
+	if ttl := os.Getenv("ACCESS_TOKEN_TTL"); ttl != "" {
+		d, err := time.ParseDuration(ttl)
+		if err != nil {
+			return Config{}, fmt.Errorf("invalid ACCESS_TOKEN_TTL: %w", err)
+		}
+		cfg.AccessTokenTTL = d
+	}
+	if rps := os.Getenv("RATE_LIMIT_RPS"); rps != "" {
+		v, err := strconv.ParseFloat(rps, 64)
+		if err != nil {
+			return Config{}, fmt.Errorf("invalid RATE_LIMIT_RPS: %w", err)
+		}
+		cfg.RateLimitRPS = v
+	}
+	if burst := os.Getenv("RATE_LIMIT_BURST"); burst != "" {
+		v, err := strconv.Atoi(burst)
+		if err != nil {
+			return Config{}, fmt.Errorf("invalid RATE_LIMIT_BURST: %w", err)
+		}
+		cfg.RateLimitBurst = v
+	}
+
+	if cfg.DatabaseURL == "" {
+		return Config{}, errors.New("DATABASE_URL is required")
+	}
+	if cfg.JWTPrivateKeyPath == "" {
+		return Config{}, errors.New("JWT_PRIVATE_KEY_PATH is required")
+	}
+	return cfg, nil
+}
+
+func getEnv(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
+}
+```
+
+- [ ] **Step 5: Run test to verify it passes**
+
+Run: `go test ./internal/config/... -v`
+Expected: PASS
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add go.mod internal/config
+git commit -m "feat(config): add env-based config loading"
+```
+
+---
+
+### Task 2: Domain value objects — Email, Credential
+
+**Files:**
+- Create: `internal/identity/domain/email.go`
+- Create: `internal/identity/domain/credential.go`
+- Create: `internal/identity/domain/errors.go`
+- Test: `internal/identity/domain/email_test.go`
+- Test: `internal/identity/domain/credential_test.go`
+
+**Interfaces:**
+- Produces: `domain.Email` (`NewEmail(raw string) (Email, error)`, `(Email) String() string`), `domain.Credential` (`NewCredential(hash, algo string, version int) (Credential, error)`, `(Credential) Hash/Algo() string`, `(Credential) Version() int`), sentinel errors `ErrInvalidEmail`, `ErrInvalidCredential`.
+
+- [ ] **Step 1: Write the failing tests**
+
+```go
+// internal/identity/domain/email_test.go
+package domain
+
+import "testing"
+
+func TestNewEmail(t *testing.T) {
+	tests := []struct {
+		name    string
+		raw     string
+		want    string
+		wantErr bool
+	}{
+		{"valid lowercase", "a@b.com", "a@b.com", false},
+		{"normalizes case", "A@B.COM", "a@b.com", false},
+		{"trims whitespace", "  a@b.com  ", "a@b.com", false},
+		{"rejects empty", "", "", true},
+		{"rejects missing @", "ab.com", "", true},
+		{"rejects missing domain", "a@", "", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			e, err := NewEmail(tt.raw)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("NewEmail(%q) error = %v, wantErr %v", tt.raw, err, tt.wantErr)
+			}
+			if !tt.wantErr && e.String() != tt.want {
+				t.Errorf("NewEmail(%q).String() = %q, want %q", tt.raw, e.String(), tt.want)
+			}
+		})
+	}
+}
+```
+
+```go
+// internal/identity/domain/credential_test.go
+package domain
+
+import "testing"
+
+func TestNewCredential(t *testing.T) {
+	c, err := NewCredential("hash", "argon2id", 1)
+	if err != nil {
+		t.Fatalf("NewCredential() error = %v, want nil", err)
+	}
+	if c.Hash() != "hash" || c.Algo() != "argon2id" || c.Version() != 1 {
+		t.Errorf("got %+v, want hash=hash algo=argon2id version=1", c)
+	}
+
+	if _, err := NewCredential("", "argon2id", 1); err == nil {
+		t.Error("NewCredential() with empty hash: error = nil, want error")
+	}
+	if _, err := NewCredential("hash", "", 1); err == nil {
+		t.Error("NewCredential() with empty algo: error = nil, want error")
+	}
+}
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `go test ./internal/identity/domain/... -v`
+Expected: FAIL — package `domain` / `NewEmail` / `NewCredential` undefined.
+
+- [ ] **Step 3: Write minimal implementation**
+
+```go
+// internal/identity/domain/errors.go
+package domain
+
+import "errors"
+
+var (
+	ErrInvalidEmail          = errors.New("invalid email")
+	ErrInvalidCredential     = errors.New("invalid credential")
+	ErrEmailAlreadyRegistered = errors.New("email already registered")
+	ErrAccountNotFound       = errors.New("account not found")
+	ErrAccountDisabled       = errors.New("account disabled")
+)
+```
+
+```go
+// internal/identity/domain/email.go
+package domain
+
+import (
+	"strings"
+)
+
+type Email struct {
+	value string
+}
+
+func NewEmail(raw string) (Email, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return Email{}, ErrInvalidEmail
+	}
+	normalized := strings.ToLower(trimmed)
+	at := strings.IndexByte(normalized, '@')
+	if at <= 0 || at == len(normalized)-1 || strings.ContainsAny(normalized[at+1:], "@") {
+		return Email{}, ErrInvalidEmail
+	}
+	domainPart := normalized[at+1:]
+	if !strings.Contains(domainPart, ".") {
+		return Email{}, ErrInvalidEmail
+	}
+	return Email{value: normalized}, nil
+}
+
+func (e Email) String() string {
+	return e.value
+}
+```
+
+```go
+// internal/identity/domain/credential.go
+package domain
+
+type Credential struct {
+	hash    string
+	algo    string
+	version int
+}
+
+func NewCredential(hash, algo string, version int) (Credential, error) {
+	if hash == "" || algo == "" || version < 1 {
+		return Credential{}, ErrInvalidCredential
+	}
+	return Credential{hash: hash, algo: algo, version: version}, nil
+}
+
+func (c Credential) Hash() string  { return c.hash }
+func (c Credential) Algo() string  { return c.algo }
+func (c Credential) Version() int  { return c.version }
+```
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `go test ./internal/identity/domain/... -v`
+Expected: PASS
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add internal/identity/domain/email.go internal/identity/domain/credential.go internal/identity/domain/errors.go internal/identity/domain/email_test.go internal/identity/domain/credential_test.go
+git commit -m "feat(domain): add Email and Credential value objects"
+```
+
+---
+
+### Task 3: Domain — Account aggregate
+
+**Files:**
+- Create: `internal/identity/domain/account.go`
+- Test: `internal/identity/domain/account_test.go`
+
+**Interfaces:**
+- Consumes: `domain.Email`, `domain.Credential` (Task 2).
+- Produces: `domain.AccountID` (`string`), `domain.AccountStatus` (`int`, consts `StatusActive`, `StatusDisabled`), `domain.Account` (`NewAccount(id AccountID, email Email, credential Credential) (*Account, error)`, `(*Account) ID/Email/Credential/Status()`, `(*Account) IsActive() bool`), `domain.NewAccountID() AccountID`.
+
+- [ ] **Step 1: Write the failing test**
+
+```go
+// internal/identity/domain/account_test.go
+package domain
+
+import "testing"
+
+func TestNewAccount(t *testing.T) {
+	email, _ := NewEmail("a@b.com")
+	cred, _ := NewCredential("hash", "argon2id", 1)
+	id := NewAccountID()
+
+	acc, err := NewAccount(id, email, cred)
+	if err != nil {
+		t.Fatalf("NewAccount() error = %v, want nil", err)
+	}
+	if acc.ID() != id {
+		t.Errorf("ID() = %v, want %v", acc.ID(), id)
+	}
+	if acc.Email() != email {
+		t.Errorf("Email() = %v, want %v", acc.Email(), email)
+	}
+	if acc.Status() != StatusActive || !acc.IsActive() {
+		t.Error("new account must be active")
+	}
+}
+
+func TestNewAccount_RejectsEmptyID(t *testing.T) {
+	email, _ := NewEmail("a@b.com")
+	cred, _ := NewCredential("hash", "argon2id", 1)
+	if _, err := NewAccount("", email, cred); err == nil {
+		t.Error("NewAccount() with empty id: error = nil, want error")
+	}
+}
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `go test ./internal/identity/domain/... -run TestNewAccount -v`
+Expected: FAIL — `Account`/`NewAccount`/`NewAccountID` undefined.
+
+- [ ] **Step 3: Write minimal implementation**
+
+```go
+// internal/identity/domain/account.go
+package domain
+
+import (
+	"errors"
+
+	"github.com/google/uuid"
+)
+
+type AccountID string
+
+func NewAccountID() AccountID {
+	return AccountID(uuid.NewString())
+}
+
+type AccountStatus int
+
+const (
+	StatusActive AccountStatus = iota
+	StatusDisabled
+)
+
+type Account struct {
+	id         AccountID
+	email      Email
+	credential Credential
+	status     AccountStatus
+}
+
+var ErrInvalidAccountID = errors.New("invalid account id")
+
+func NewAccount(id AccountID, email Email, credential Credential) (*Account, error) {
+	if id == "" {
+		return nil, ErrInvalidAccountID
+	}
+	return &Account{id: id, email: email, credential: credential, status: StatusActive}, nil
+}
+
+func (a *Account) ID() AccountID           { return a.id }
+func (a *Account) Email() Email            { return a.email }
+func (a *Account) Credential() Credential  { return a.credential }
+func (a *Account) Status() AccountStatus   { return a.status }
+func (a *Account) IsActive() bool          { return a.status == StatusActive }
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `go test ./internal/identity/domain/... -v`
+Expected: PASS
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add internal/identity/domain/account.go internal/identity/domain/account_test.go
+git commit -m "feat(domain): add Account aggregate"
+```
+
+---
+
+### Task 4: PasswordHasher port + argon2id adapter
+
+**Files:**
+- Create: `internal/identity/app/ports.go`
+- Create: `internal/identity/infra/passwordhash/argon2.go`
+- Test: `internal/identity/infra/passwordhash/argon2_test.go`
+
+**Interfaces:**
+- Consumes: `domain.Credential`, `domain.Account`.
+- Produces: `app.AccountRepository`, `app.PasswordHasher`, `app.TokenIssuer`, `app.Clock` (interfaces), `passwordhash.Argon2IDHasher{}` implementing `app.PasswordHasher`.
+
+- [ ] **Step 1: Write the ports (no test — pure interfaces)**
+
+```go
+// internal/identity/app/ports.go
+package app
+
+import (
+	"context"
+	"time"
+
+	"github.com/AymanKastali/iam-base/internal/identity/domain"
+)
+
+type AccountRepository interface {
+	Save(ctx context.Context, account *domain.Account) error
+	FindByEmail(ctx context.Context, email domain.Email) (*domain.Account, error)
+}
+
+type PasswordHasher interface {
+	Hash(password string) (domain.Credential, error)
+	Verify(credential domain.Credential, password string) (bool, error)
+}
+
+type TokenIssuer interface {
+	Issue(ctx context.Context, accountID domain.AccountID) (accessToken string, expiresAt time.Time, err error)
+}
+
+type Clock interface {
+	Now() time.Time
+}
+```
+
+- [ ] **Step 2: Write the failing test**
+
+```go
+// internal/identity/infra/passwordhash/argon2_test.go
+package passwordhash
+
+import "testing"
+
+func TestArgon2IDHasher_HashAndVerify(t *testing.T) {
+	h := Argon2IDHasher{}
+
+	cred, err := h.Hash("correct horse battery staple")
+	if err != nil {
+		t.Fatalf("Hash() error = %v, want nil", err)
+	}
+	if cred.Algo() != "argon2id" {
+		t.Errorf("Algo() = %q, want argon2id", cred.Algo())
+	}
+
+	ok, err := h.Verify(cred, "correct horse battery staple")
+	if err != nil || !ok {
+		t.Fatalf("Verify() = %v, %v, want true, nil", ok, err)
+	}
+
+	ok, err = h.Verify(cred, "wrong password")
+	if err != nil || ok {
+		t.Fatalf("Verify() with wrong password = %v, %v, want false, nil", ok, err)
+	}
+}
+```
+
+- [ ] **Step 3: Run test to verify it fails**
+
+Run: `go test ./internal/identity/infra/passwordhash/... -v`
+Expected: FAIL — `Argon2IDHasher` undefined.
+
+- [ ] **Step 4: Write minimal implementation**
+
+```bash
+go get github.com/alexedwards/argon2id
+```
+
+```go
+// internal/identity/infra/passwordhash/argon2.go
+package passwordhash
+
+import (
+	"github.com/alexedwards/argon2id"
+
+	"github.com/AymanKastali/iam-base/internal/identity/domain"
+)
+
+const algoName = "argon2id"
+const credentialVersion = 1
+
+type Argon2IDHasher struct{}
+
+func (Argon2IDHasher) Hash(password string) (domain.Credential, error) {
+	hash, err := argon2id.CreateHash(password, argon2id.DefaultParams)
+	if err != nil {
+		return domain.Credential{}, err
+	}
+	return domain.NewCredential(hash, algoName, credentialVersion)
+}
+
+func (Argon2IDHasher) Verify(credential domain.Credential, password string) (bool, error) {
+	return argon2id.ComparePasswordAndHash(password, credential.Hash())
+}
+```
+
+- [ ] **Step 5: Run test to verify it passes**
+
+Run: `go test ./internal/identity/infra/passwordhash/... -v`
+Expected: PASS
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add go.mod go.sum internal/identity/app/ports.go internal/identity/infra/passwordhash
+git commit -m "feat(infra): add argon2id password hasher"
+```
+
+---
+
+### Task 5: Postgres migration + AccountRepository
+
+**Files:**
+- Create: `internal/identity/infra/postgres/migrations/000001_create_accounts.up.sql`
+- Create: `internal/identity/infra/postgres/migrations/000001_create_accounts.down.sql`
+- Create: `internal/identity/infra/postgres/account_repo.go`
+- Test: `internal/identity/infra/postgres/account_repo_test.go`
+
+**Interfaces:**
+- Consumes: `app.AccountRepository`, `domain.Account`, `domain.Email`, `domain.NewAccount`.
+- Produces: `postgres.AccountRepository{pool *pgxpool.Pool}` implementing `app.AccountRepository`.
+
+- [ ] **Step 1: Write the migration**
+
+```sql
+-- internal/identity/infra/postgres/migrations/000001_create_accounts.up.sql
+CREATE TABLE accounts (
+    id UUID PRIMARY KEY,
+    email TEXT NOT NULL UNIQUE,
+    credential_hash TEXT NOT NULL,
+    credential_algo TEXT NOT NULL,
+    credential_version INT NOT NULL,
+    status TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+```
+
+```sql
+-- internal/identity/infra/postgres/migrations/000001_create_accounts.down.sql
+DROP TABLE accounts;
+```
+
+- [ ] **Step 2: Write the failing test (real Postgres via testcontainers)**
+
+```bash
+go get github.com/testcontainers/testcontainers-go/modules/postgres
+go get github.com/jackc/pgx/v5/pgxpool
+go get github.com/golang-migrate/migrate/v4
+```
+
+```go
+// internal/identity/infra/postgres/account_repo_test.go
+package postgres
+
+import (
+	"context"
+	"testing"
+
+	"github.com/golang-migrate/migrate/v4"
+	"github.com/golang-migrate/migrate/v4/database/pgx/v5"
+	_ "github.com/golang-migrate/migrate/v4/source/file"
+	"github.com/jackc/pgx/v5/pgxpool"
+	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
+
+	"github.com/AymanKastali/iam-base/internal/identity/domain"
+)
+
+func newTestRepo(t *testing.T) *AccountRepository {
+	t.Helper()
+	ctx := context.Background()
+
+	container, err := tcpostgres.Run(ctx, "postgres:16-alpine",
+		tcpostgres.WithDatabase("iam_test"),
+		tcpostgres.WithUsername("test"),
+		tcpostgres.WithPassword("test"),
+		tcpostgres.BasicWaitStrategies(),
+	)
+	if err != nil {
+		t.Fatalf("start postgres container: %v", err)
+	}
+	t.Cleanup(func() { _ = container.Terminate(ctx) })
+
+	dsn, err := container.ConnectionString(ctx, "sslmode=disable")
+	if err != nil {
+		t.Fatalf("connection string: %v", err)
+	}
+
+	m, err := migrate.New("file://migrations", dsn)
+	if err != nil {
+		t.Fatalf("migrate.New: %v", err)
+	}
+	if err := m.Up(); err != nil {
+		t.Fatalf("migrate up: %v", err)
+	}
+
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("pgxpool.New: %v", err)
+	}
+	t.Cleanup(pool.Close)
+
+	return &AccountRepository{pool: pool}
+}
+
+func newTestAccount(t *testing.T, email string) *domain.Account {
+	t.Helper()
+	e, err := domain.NewEmail(email)
+	if err != nil {
+		t.Fatalf("NewEmail: %v", err)
+	}
+	c, err := domain.NewCredential("hash", "argon2id", 1)
+	if err != nil {
+		t.Fatalf("NewCredential: %v", err)
+	}
+	acc, err := domain.NewAccount(domain.NewAccountID(), e, c)
+	if err != nil {
+		t.Fatalf("NewAccount: %v", err)
+	}
+	return acc
+}
+
+func TestAccountRepository_SaveAndFindByEmail(t *testing.T) {
+	repo := newTestRepo(t)
+	ctx := context.Background()
+	acc := newTestAccount(t, "a@b.com")
+
+	if err := repo.Save(ctx, acc); err != nil {
+		t.Fatalf("Save() error = %v, want nil", err)
+	}
+
+	found, err := repo.FindByEmail(ctx, acc.Email())
+	if err != nil {
+		t.Fatalf("FindByEmail() error = %v, want nil", err)
+	}
+	if found.ID() != acc.ID() {
+		t.Errorf("FindByEmail().ID() = %v, want %v", found.ID(), acc.ID())
+	}
+}
+
+func TestAccountRepository_Save_DuplicateEmail(t *testing.T) {
+	repo := newTestRepo(t)
+	ctx := context.Background()
+	acc1 := newTestAccount(t, "dup@b.com")
+	acc2 := newTestAccount(t, "dup@b.com")
+
+	if err := repo.Save(ctx, acc1); err != nil {
+		t.Fatalf("Save() first account error = %v, want nil", err)
+	}
+	err := repo.Save(ctx, acc2)
+	if !errors.Is(err, domain.ErrEmailAlreadyRegistered) {
+		t.Fatalf("Save() duplicate error = %v, want ErrEmailAlreadyRegistered", err)
+	}
+}
+
+func TestAccountRepository_FindByEmail_NotFound(t *testing.T) {
+	repo := newTestRepo(t)
+	ctx := context.Background()
+	email, _ := domain.NewEmail("missing@b.com")
+
+	_, err := repo.FindByEmail(ctx, email)
+	if !errors.Is(err, domain.ErrAccountNotFound) {
+		t.Fatalf("FindByEmail() error = %v, want ErrAccountNotFound", err)
+	}
+}
+```
+
+Add `"errors"` to the test file's imports.
+
+- [ ] **Step 3: Run test to verify it fails**
+
+Run: `go test ./internal/identity/infra/postgres/... -v`
+Expected: FAIL — `AccountRepository` undefined (requires Docker available for testcontainers once the implementation exists).
+
+- [ ] **Step 4: Write minimal implementation**
+
+```go
+// internal/identity/infra/postgres/account_repo.go
+package postgres
+
+import (
+	"context"
+	"errors"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/AymanKastali/iam-base/internal/identity/domain"
+)
+
+type AccountRepository struct {
+	pool *pgxpool.Pool
+}
+
+func NewAccountRepository(pool *pgxpool.Pool) *AccountRepository {
+	return &AccountRepository{pool: pool}
+}
+
+func (r *AccountRepository) Save(ctx context.Context, account *domain.Account) error {
+	const q = `
+		INSERT INTO accounts (id, email, credential_hash, credential_algo, credential_version, status)
+		VALUES ($1, $2, $3, $4, $5, $6)
+	`
+	_, err := r.pool.Exec(ctx, q,
+		string(account.ID()),
+		account.Email().String(),
+		account.Credential().Hash(),
+		account.Credential().Algo(),
+		account.Credential().Version(),
+		statusString(account.Status()),
+	)
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return domain.ErrEmailAlreadyRegistered
+		}
+		return err
+	}
+	return nil
+}
+
+func (r *AccountRepository) FindByEmail(ctx context.Context, email domain.Email) (*domain.Account, error) {
+	const q = `
+		SELECT id, email, credential_hash, credential_algo, credential_version, status
+		FROM accounts WHERE email = $1
+	`
+	var (
+		id, emailStr, hash, algo, status string
+		version                          int
+	)
+	err := r.pool.QueryRow(ctx, q, email.String()).Scan(&id, &emailStr, &hash, &algo, &version, &status)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, domain.ErrAccountNotFound
+		}
+		return nil, err
+	}
+
+	e, err := domain.NewEmail(emailStr)
+	if err != nil {
+		return nil, err
+	}
+	cred, err := domain.NewCredential(hash, algo, version)
+	if err != nil {
+		return nil, err
+	}
+	return domain.NewAccount(domain.AccountID(id), e, cred)
+}
+
+func statusString(s domain.AccountStatus) string {
+	if s == domain.StatusDisabled {
+		return "disabled"
+	}
+	return "active"
+}
+```
+
+- [ ] **Step 5: Run test to verify it passes**
+
+Run: `go test ./internal/identity/infra/postgres/... -v`
+Expected: PASS (requires a local Docker daemon for testcontainers)
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add go.mod go.sum internal/identity/infra/postgres
+git commit -m "feat(infra): add Postgres AccountRepository and accounts migration"
+```
+
+---
+
+### Task 6: JWT TokenIssuer (RS256) + JWKS query
+
+**Files:**
+- Create: `internal/identity/infra/jwt/issuer.go`
+- Test: `internal/identity/infra/jwt/issuer_test.go`
+- Create: `internal/identity/app/query/jwks.go`
+- Test: `internal/identity/app/query/jwks_test.go`
+
+**Interfaces:**
+- Consumes: `app.TokenIssuer` (Task 4), `domain.AccountID`.
+- Produces: `jwt.RSAIssuer{}` (`NewRSAIssuer(privateKey *rsa.PrivateKey, keyID string, ttl time.Duration, clock app.Clock) *RSAIssuer`, implements `app.TokenIssuer`, plus `(*RSAIssuer) JWKS() query.JWKSDocument`), `query.JWKSDocument{Keys []JWKSKey}`, `query.JWKSKey{Kty, Use, Kid, Alg, N, E string}`, `query.JWKSPort interface{ JWKS() JWKSDocument }`, `query.GetJWKSHandler{port JWKSPort}` (`Handle(ctx) (JWKSDocument, error)`).
+
+- [ ] **Step 1: Write the failing tests**
+
+```go
+// internal/identity/app/query/jwks_test.go
+package query
+
+import (
+	"context"
+	"testing"
+)
+
+type fakeJWKSPort struct{ doc JWKSDocument }
+
+func (f fakeJWKSPort) JWKS() JWKSDocument { return f.doc }
+
+func TestGetJWKSHandler_Handle(t *testing.T) {
+	want := JWKSDocument{Keys: []JWKSKey{{Kty: "RSA", Use: "sig", Kid: "1", Alg: "RS256", N: "n", E: "e"}}}
+	h := GetJWKSHandler{Port: fakeJWKSPort{doc: want}}
+
+	got, err := h.Handle(context.Background())
+	if err != nil {
+		t.Fatalf("Handle() error = %v, want nil", err)
+	}
+	if len(got.Keys) != 1 || got.Keys[0].Kid != "1" {
+		t.Errorf("Handle() = %+v, want %+v", got, want)
+	}
+}
+```
+
+```go
+// internal/identity/infra/jwt/issuer_test.go
+package jwt
+
+import (
+	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"testing"
+	"time"
+
+	jwtlib "github.com/golang-jwt/jwt/v5"
+
+	"github.com/AymanKastali/iam-base/internal/identity/domain"
+)
+
+type fixedClock struct{ now time.Time }
+
+func (c fixedClock) Now() time.Time { return c.now }
+
+func TestRSAIssuer_IssueAndVerify(t *testing.T) {
+	priv, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	issuer := NewRSAIssuer(priv, "1", 15*time.Minute, fixedClock{now: now})
+
+	token, expiresAt, err := issuer.Issue(context.Background(), domain.AccountID("acc-1"))
+	if err != nil {
+		t.Fatalf("Issue() error = %v, want nil", err)
+	}
+	if !expiresAt.Equal(now.Add(15 * time.Minute)) {
+		t.Errorf("expiresAt = %v, want %v", expiresAt, now.Add(15*time.Minute))
+	}
+
+	parsed, err := jwtlib.Parse(token, func(tok *jwtlib.Token) (interface{}, error) {
+		return &priv.PublicKey, nil
+	}, jwtlib.WithValidMethods([]string{"RS256"}))
+	if err != nil || !parsed.Valid {
+		t.Fatalf("Parse() error = %v, valid = %v", err, parsed.Valid)
+	}
+	claims := parsed.Claims.(jwtlib.MapClaims)
+	if claims["sub"] != "acc-1" {
+		t.Errorf("sub claim = %v, want acc-1", claims["sub"])
+	}
+}
+
+func TestRSAIssuer_JWKS(t *testing.T) {
+	priv, _ := rsa.GenerateKey(rand.Reader, 2048)
+	issuer := NewRSAIssuer(priv, "1", 15*time.Minute, fixedClock{now: time.Now()})
+
+	doc := issuer.JWKS()
+	if len(doc.Keys) != 1 {
+		t.Fatalf("JWKS().Keys = %d keys, want 1", len(doc.Keys))
+	}
+	k := doc.Keys[0]
+	if k.Kty != "RSA" || k.Alg != "RS256" || k.Kid != "1" || k.N == "" || k.E == "" {
+		t.Errorf("JWKS key = %+v, want RSA/RS256/1 with non-empty n, e", k)
+	}
+}
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `go test ./internal/identity/app/query/... ./internal/identity/infra/jwt/... -v`
+Expected: FAIL — `GetJWKSHandler`, `NewRSAIssuer` undefined.
+
+- [ ] **Step 3: Write minimal implementation**
+
+```go
+// internal/identity/app/query/jwks.go
+package query
+
+import "context"
+
+type JWKSKey struct {
+	Kty string `json:"kty"`
+	Use string `json:"use"`
+	Kid string `json:"kid"`
+	Alg string `json:"alg"`
+	N   string `json:"n"`
+	E   string `json:"e"`
+}
+
+type JWKSDocument struct {
+	Keys []JWKSKey `json:"keys"`
+}
+
+type JWKSPort interface {
+	JWKS() JWKSDocument
+}
+
+type GetJWKSHandler struct {
+	Port JWKSPort
+}
+
+func (h GetJWKSHandler) Handle(ctx context.Context) (JWKSDocument, error) {
+	return h.Port.JWKS(), nil
+}
+```
+
+```bash
+go get github.com/golang-jwt/jwt/v5
+```
+
+```go
+// internal/identity/infra/jwt/issuer.go
+package jwt
+
+import (
+	"context"
+	"crypto/rsa"
+	"encoding/base64"
+	"math/big"
+	"time"
+
+	jwtlib "github.com/golang-jwt/jwt/v5"
+
+	"github.com/AymanKastali/iam-base/internal/identity/app"
+	"github.com/AymanKastali/iam-base/internal/identity/app/query"
+	"github.com/AymanKastali/iam-base/internal/identity/domain"
+)
+
+type RSAIssuer struct {
+	privateKey *rsa.PrivateKey
+	keyID      string
+	ttl        time.Duration
+	clock      app.Clock
+}
+
+func NewRSAIssuer(privateKey *rsa.PrivateKey, keyID string, ttl time.Duration, clock app.Clock) *RSAIssuer {
+	return &RSAIssuer{privateKey: privateKey, keyID: keyID, ttl: ttl, clock: clock}
+}
+
+func (i *RSAIssuer) Issue(ctx context.Context, accountID domain.AccountID) (string, time.Time, error) {
+	now := i.clock.Now()
+	expiresAt := now.Add(i.ttl)
+
+	claims := jwtlib.MapClaims{
+		"sub": string(accountID),
+		"iat": now.Unix(),
+		"exp": expiresAt.Unix(),
+	}
+	token := jwtlib.NewWithClaims(jwtlib.SigningMethodRS256, claims)
+	token.Header["kid"] = i.keyID
+
+	signed, err := token.SignedString(i.privateKey)
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	return signed, expiresAt, nil
+}
+
+func (i *RSAIssuer) JWKS() query.JWKSDocument {
+	pub := i.privateKey.PublicKey
+	return query.JWKSDocument{
+		Keys: []query.JWKSKey{
+			{
+				Kty: "RSA",
+				Use: "sig",
+				Kid: i.keyID,
+				Alg: "RS256",
+				N:   base64.RawURLEncoding.EncodeToString(pub.N.Bytes()),
+				E:   base64.RawURLEncoding.EncodeToString(big.NewInt(int64(pub.E)).Bytes()),
+			},
+		},
+	}
+}
+```
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `go test ./internal/identity/app/query/... ./internal/identity/infra/jwt/... -v`
+Expected: PASS
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add go.mod go.sum internal/identity/app/query internal/identity/infra/jwt
+git commit -m "feat(infra): add RS256 JWT issuer and JWKS query"
+```
+
+---
+
+### Task 7: RegisterAccount command handler
+
+**Files:**
+- Create: `internal/identity/app/command/register.go`
+- Test: `internal/identity/app/command/register_test.go`
+
+**Interfaces:**
+- Consumes: `app.AccountRepository`, `app.PasswordHasher`, `domain.NewEmail`, `domain.NewAccount`, `domain.NewAccountID`.
+- Produces: `command.RegisterAccountCommand{Email, Password string}`, `command.RegisterAccountHandler{Repo app.AccountRepository, Hasher app.PasswordHasher}` (`Handle(ctx, cmd) (domain.AccountID, error)`).
+
+- [ ] **Step 1: Write the failing test**
+
+```go
+// internal/identity/app/command/register_test.go
+package command
+
+import (
+	"context"
+	"errors"
+	"testing"
+
+	"github.com/AymanKastali/iam-base/internal/identity/domain"
+)
+
+// sampleCredential is a fixture value, not a secret — kept as a named constant
+// (rather than inline in struct literals) so it reads clearly as test data.
+const sampleCredential = "secret123"
+
+type fakeAccountRepo struct {
+	accounts map[string]*domain.Account
+	saveErr  error
+}
+
+func newFakeAccountRepo() *fakeAccountRepo {
+	return &fakeAccountRepo{accounts: map[string]*domain.Account{}}
+}
+
+func (r *fakeAccountRepo) Save(ctx context.Context, a *domain.Account) error {
+	if r.saveErr != nil {
+		return r.saveErr
+	}
+	r.accounts[a.Email().String()] = a
+	return nil
+}
+
+func (r *fakeAccountRepo) FindByEmail(ctx context.Context, e domain.Email) (*domain.Account, error) {
+	a, ok := r.accounts[e.String()]
+	if !ok {
+		return nil, domain.ErrAccountNotFound
+	}
+	return a, nil
+}
+
+type fakeHasher struct{}
+
+func (fakeHasher) Hash(password string) (domain.Credential, error) {
+	return domain.NewCredential("hashed:"+password, "argon2id", 1)
+}
+
+func (fakeHasher) Verify(c domain.Credential, password string) (bool, error) {
+	return c.Hash() == "hashed:"+password, nil
+}
+
+func TestRegisterAccountHandler_Handle(t *testing.T) {
+	repo := newFakeAccountRepo()
+	h := RegisterAccountHandler{Repo: repo, Hasher: fakeHasher{}}
+
+	id, err := h.Handle(context.Background(), RegisterAccountCommand{Email: "a@b.com", Password: sampleCredential})
+	if err != nil {
+		t.Fatalf("Handle() error = %v, want nil", err)
+	}
+	if id == "" {
+		t.Error("Handle() returned empty AccountID")
+	}
+
+	stored, err := repo.FindByEmail(context.Background(), mustEmail(t, "a@b.com"))
+	if err != nil {
+		t.Fatalf("FindByEmail() error = %v, want nil", err)
+	}
+	if stored.Credential().Hash() != "hashed:"+sampleCredential {
+		t.Errorf("stored credential hash = %q, want %q", stored.Credential().Hash(), "hashed:"+sampleCredential)
+	}
+}
+
+func TestRegisterAccountHandler_Handle_InvalidEmail(t *testing.T) {
+	h := RegisterAccountHandler{Repo: newFakeAccountRepo(), Hasher: fakeHasher{}}
+
+	_, err := h.Handle(context.Background(), RegisterAccountCommand{Email: "not-an-email", Password: sampleCredential})
+	if !errors.Is(err, domain.ErrInvalidEmail) {
+		t.Fatalf("Handle() error = %v, want ErrInvalidEmail", err)
+	}
+}
+
+func TestRegisterAccountHandler_Handle_DuplicateEmail(t *testing.T) {
+	repo := newFakeAccountRepo()
+	repo.saveErr = domain.ErrEmailAlreadyRegistered
+	h := RegisterAccountHandler{Repo: repo, Hasher: fakeHasher{}}
+
+	_, err := h.Handle(context.Background(), RegisterAccountCommand{Email: "a@b.com", Password: sampleCredential})
+	if !errors.Is(err, domain.ErrEmailAlreadyRegistered) {
+		t.Fatalf("Handle() error = %v, want ErrEmailAlreadyRegistered", err)
+	}
+}
+
+func mustEmail(t *testing.T, raw string) domain.Email {
+	t.Helper()
+	e, err := domain.NewEmail(raw)
+	if err != nil {
+		t.Fatalf("NewEmail(%q): %v", raw, err)
+	}
+	return e
+}
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `go test ./internal/identity/app/command/... -run TestRegisterAccountHandler -v`
+Expected: FAIL — `RegisterAccountHandler`/`RegisterAccountCommand` undefined.
+
+- [ ] **Step 3: Write minimal implementation**
+
+```go
+// internal/identity/app/command/register.go
+package command
+
+import (
+	"context"
+
+	"github.com/AymanKastali/iam-base/internal/identity/app"
+	"github.com/AymanKastali/iam-base/internal/identity/domain"
+)
+
+type RegisterAccountCommand struct {
+	Email    string
+	Password string
+}
+
+type RegisterAccountHandler struct {
+	Repo   app.AccountRepository
+	Hasher app.PasswordHasher
+}
+
+func (h RegisterAccountHandler) Handle(ctx context.Context, cmd RegisterAccountCommand) (domain.AccountID, error) {
+	email, err := domain.NewEmail(cmd.Email)
+	if err != nil {
+		return "", err
+	}
+	credential, err := h.Hasher.Hash(cmd.Password)
+	if err != nil {
+		return "", err
+	}
+	account, err := domain.NewAccount(domain.NewAccountID(), email, credential)
+	if err != nil {
+		return "", err
+	}
+	if err := h.Repo.Save(ctx, account); err != nil {
+		return "", err
+	}
+	return account.ID(), nil
+}
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `go test ./internal/identity/app/command/... -v`
+Expected: PASS
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add internal/identity/app/command/register.go internal/identity/app/command/register_test.go
+git commit -m "feat(app): add RegisterAccount command handler"
+```
+
+---
+
+### Task 8: Authenticate (login) command handler
+
+**Files:**
+- Create: `internal/identity/app/command/login.go`
+- Test: `internal/identity/app/command/login_test.go`
+
+**Interfaces:**
+- Consumes: `app.AccountRepository`, `app.PasswordHasher`, `app.TokenIssuer` (Tasks 4, 6), fakes from Task 7's test file (`fakeAccountRepo`, `fakeHasher` — same package `command`).
+- Produces: `command.LoginCommand{Email, Password string}`, `command.LoginResult{AccessToken string, ExpiresAt time.Time}`, `command.LoginHandler{Repo app.AccountRepository, Hasher app.PasswordHasher, Issuer app.TokenIssuer}` (`Handle(ctx, cmd) (LoginResult, error)`), `command.ErrInvalidCredentials`.
+
+- [ ] **Step 1: Write the failing test**
+
+```go
+// internal/identity/app/command/login_test.go
+package command
+
+import (
+	"context"
+	"errors"
+	"testing"
+	"time"
+
+	"github.com/AymanKastali/iam-base/internal/identity/domain"
+)
+
+type fakeIssuer struct {
+	token     string
+	expiresAt time.Time
+	err       error
+}
+
+func (f fakeIssuer) Issue(ctx context.Context, id domain.AccountID) (string, time.Time, error) {
+	if f.err != nil {
+		return "", time.Time{}, f.err
+	}
+	return f.token, f.expiresAt, nil
+}
+
+func registerFixture(t *testing.T, repo *fakeAccountRepo, email, password string) {
+	t.Helper()
+	h := RegisterAccountHandler{Repo: repo, Hasher: fakeHasher{}}
+	if _, err := h.Handle(context.Background(), RegisterAccountCommand{Email: email, Password: password}); err != nil {
+		t.Fatalf("fixture register: %v", err)
+	}
+}
+
+func TestLoginHandler_Handle_Success(t *testing.T) {
+	repo := newFakeAccountRepo()
+	registerFixture(t, repo, "a@b.com", sampleCredential)
+	expiresAt := time.Now().Add(15 * time.Minute)
+	h := LoginHandler{Repo: repo, Hasher: fakeHasher{}, Issuer: fakeIssuer{token: "signed-jwt", expiresAt: expiresAt}}
+
+	result, err := h.Handle(context.Background(), LoginCommand{Email: "a@b.com", Password: sampleCredential})
+	if err != nil {
+		t.Fatalf("Handle() error = %v, want nil", err)
+	}
+	if result.AccessToken != "signed-jwt" || !result.ExpiresAt.Equal(expiresAt) {
+		t.Errorf("Handle() = %+v, want token=signed-jwt expiresAt=%v", result, expiresAt)
+	}
+}
+
+func TestLoginHandler_Handle_WrongPassword(t *testing.T) {
+	repo := newFakeAccountRepo()
+	registerFixture(t, repo, "a@b.com", sampleCredential)
+	h := LoginHandler{Repo: repo, Hasher: fakeHasher{}, Issuer: fakeIssuer{}}
+
+	_, err := h.Handle(context.Background(), LoginCommand{Email: "a@b.com", Password: "wrong"})
+	if !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatalf("Handle() error = %v, want ErrInvalidCredentials", err)
+	}
+}
+
+func TestLoginHandler_Handle_UnknownEmail(t *testing.T) {
+	repo := newFakeAccountRepo()
+	h := LoginHandler{Repo: repo, Hasher: fakeHasher{}, Issuer: fakeIssuer{}}
+
+	_, err := h.Handle(context.Background(), LoginCommand{Email: "missing@b.com", Password: sampleCredential})
+	if !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatalf("Handle() error = %v, want ErrInvalidCredentials (must not leak account existence)", err)
+	}
+}
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `go test ./internal/identity/app/command/... -run TestLoginHandler -v`
+Expected: FAIL — `LoginHandler`/`LoginCommand`/`ErrInvalidCredentials` undefined.
+
+- [ ] **Step 3: Write minimal implementation**
+
+```go
+// internal/identity/app/command/login.go
+package command
+
+import (
+	"context"
+	"errors"
+	"time"
+
+	"github.com/AymanKastali/iam-base/internal/identity/app"
+	"github.com/AymanKastali/iam-base/internal/identity/domain"
+)
+
+var ErrInvalidCredentials = errors.New("invalid credentials")
+
+type LoginCommand struct {
+	Email    string
+	Password string
+}
+
+type LoginResult struct {
+	AccessToken string
+	ExpiresAt   time.Time
+}
+
+type LoginHandler struct {
+	Repo   app.AccountRepository
+	Hasher app.PasswordHasher
+	Issuer app.TokenIssuer
+}
+
+func (h LoginHandler) Handle(ctx context.Context, cmd LoginCommand) (LoginResult, error) {
+	email, err := domain.NewEmail(cmd.Email)
+	if err != nil {
+		return LoginResult{}, ErrInvalidCredentials
+	}
+	account, err := h.Repo.FindByEmail(ctx, email)
+	if err != nil {
+		return LoginResult{}, ErrInvalidCredentials
+	}
+	if !account.IsActive() {
+		return LoginResult{}, domain.ErrAccountDisabled
+	}
+	ok, err := h.Hasher.Verify(account.Credential(), cmd.Password)
+	if err != nil {
+		return LoginResult{}, err
+	}
+	if !ok {
+		return LoginResult{}, ErrInvalidCredentials
+	}
+	token, expiresAt, err := h.Issuer.Issue(ctx, account.ID())
+	if err != nil {
+		return LoginResult{}, err
+	}
+	return LoginResult{AccessToken: token, ExpiresAt: expiresAt}, nil
+}
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `go test ./internal/identity/app/command/... -v`
+Expected: PASS
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add internal/identity/app/command/login.go internal/identity/app/command/login_test.go
+git commit -m "feat(app): add Login command handler"
+```
+
+---
+
+### Task 9: IP rate-limiting middleware
+
+**Files:**
+- Create: `internal/identity/infra/httpapi/ratelimit.go`
+- Test: `internal/identity/infra/httpapi/ratelimit_test.go`
+
+**Interfaces:**
+- Produces: `httpapi.NewIPRateLimiter(rps float64, burst int) *IPRateLimiter` (`(*IPRateLimiter) Middleware(next http.Handler) http.Handler`, returns HTTP 429 when exceeded).
+
+- [ ] **Step 1: Write the failing test**
+
+```go
+// internal/identity/infra/httpapi/ratelimit_test.go
+package httpapi
+
+import (
+	"net/http"
+	"net/http/httptest"
+	"testing"
+)
+
+func TestIPRateLimiter_Middleware(t *testing.T) {
+	limiter := NewIPRateLimiter(1, 1) // 1 request burst, refills slowly
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	handler := limiter.Middleware(next)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/auth/login", nil)
+	req.RemoteAddr = "1.2.3.4:5555"
+
+	rec1 := httptest.NewRecorder()
+	handler.ServeHTTP(rec1, req)
+	if rec1.Code != http.StatusOK {
+		t.Fatalf("first request status = %d, want 200", rec1.Code)
+	}
+
+	rec2 := httptest.NewRecorder()
+	handler.ServeHTTP(rec2, req)
+	if rec2.Code != http.StatusTooManyRequests {
+		t.Fatalf("second request status = %d, want 429", rec2.Code)
+	}
+}
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `go test ./internal/identity/infra/httpapi/... -run TestIPRateLimiter -v`
+Expected: FAIL — `NewIPRateLimiter` undefined.
+
+- [ ] **Step 3: Write minimal implementation**
+
+```go
+// internal/identity/infra/httpapi/ratelimit.go
+package httpapi
+
+import (
+	"net"
+	"net/http"
+	"sync"
+
+	"golang.org/x/time/rate"
+)
+
+type IPRateLimiter struct {
+	mu       sync.Mutex
+	limiters map[string]*rate.Limiter
+	rps      rate.Limit
+	burst    int
+}
+
+func NewIPRateLimiter(rps float64, burst int) *IPRateLimiter {
+	return &IPRateLimiter{
+		limiters: make(map[string]*rate.Limiter),
+		rps:      rate.Limit(rps),
+		burst:    burst,
+	}
+}
+
+func (l *IPRateLimiter) limiterFor(ip string) *rate.Limiter {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	lim, ok := l.limiters[ip]
+	if !ok {
+		lim = rate.NewLimiter(l.rps, l.burst)
+		l.limiters[ip] = lim
+	}
+	return lim
+}
+
+func (l *IPRateLimiter) Middleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		host, _, err := net.SplitHostPort(r.RemoteAddr)
+		if err != nil {
+			host = r.RemoteAddr
+		}
+		if !l.limiterFor(host).Allow() {
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `go test ./internal/identity/infra/httpapi/... -v`
+Expected: PASS
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add go.mod go.sum internal/identity/infra/httpapi/ratelimit.go internal/identity/infra/httpapi/ratelimit_test.go
+git commit -m "feat(infra): add per-IP rate limiting middleware"
+```
+
+---
+
+### Task 10: HTTP handlers — register, login, JWKS + router
+
+**Files:**
+- Create: `internal/identity/infra/httpapi/register_handler.go`
+- Test: `internal/identity/infra/httpapi/register_handler_test.go`
+- Create: `internal/identity/infra/httpapi/login_handler.go`
+- Test: `internal/identity/infra/httpapi/login_handler_test.go`
+- Create: `internal/identity/infra/httpapi/jwks_handler.go`
+- Test: `internal/identity/infra/httpapi/jwks_handler_test.go`
+- Create: `internal/identity/infra/httpapi/router.go`
+
+**Interfaces:**
+- Consumes: `command.RegisterAccountHandler`, `command.LoginHandler`, `query.GetJWKSHandler` (Tasks 6-8), `IPRateLimiter` (Task 9).
+- Produces: `httpapi.RegisterHandler`, `httpapi.LoginHandler`, `httpapi.JWKSHandler` (each `http.Handler`), `httpapi.NewRouter(register, login, jwks http.Handler, limiter *IPRateLimiter) *chi.Mux`.
+
+- [ ] **Step 1: Write the failing tests**
+
+```go
+// internal/identity/infra/httpapi/register_handler_test.go
+package httpapi
+
+import (
+	"bytes"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"github.com/AymanKastali/iam-base/internal/identity/app/command"
+	"github.com/AymanKastali/iam-base/internal/identity/domain"
+)
+
+// sampleCredential is a fixture value, not a secret — named so it never reads
+// like a hardcoded credential in a struct literal or JSON body.
+const sampleCredential = "secret123"
+
+type stubAccountRepo struct {
+	saved   *domain.Account
+	saveErr error
+}
+
+func (r *stubAccountRepo) Save(ctx contextType, a *domain.Account) error {
+	if r.saveErr != nil {
+		return r.saveErr
+	}
+	r.saved = a
+	return nil
+}
+
+func (r *stubAccountRepo) FindByEmail(ctx contextType, e domain.Email) (*domain.Account, error) {
+	if r.saved != nil && r.saved.Email() == e {
+		return r.saved, nil
+	}
+	return nil, domain.ErrAccountNotFound
+}
+
+type stubHasher struct{}
+
+func (stubHasher) Hash(password string) (domain.Credential, error) {
+	return domain.NewCredential("hashed:"+password, "argon2id", 1)
+}
+
+func (stubHasher) Verify(c domain.Credential, password string) (bool, error) {
+	return c.Hash() == "hashed:"+password, nil
+}
+
+func TestRegisterHandler_ServeHTTP_Success(t *testing.T) {
+	repo := &stubAccountRepo{}
+	h := RegisterHandler{Handler: command.RegisterAccountHandler{Repo: repo, Hasher: stubHasher{}}}
+
+	body, _ := json.Marshal(map[string]string{"email": "a@b.com", "password": sampleCredential})
+	req := httptest.NewRequest(http.MethodPost, "/v1/auth/register", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestRegisterHandler_ServeHTTP_DuplicateEmail(t *testing.T) {
+	repo := &stubAccountRepo{saveErr: domain.ErrEmailAlreadyRegistered}
+	h := RegisterHandler{Handler: command.RegisterAccountHandler{Repo: repo, Hasher: stubHasher{}}}
+
+	body, _ := json.Marshal(map[string]string{"email": "a@b.com", "password": sampleCredential})
+	req := httptest.NewRequest(http.MethodPost, "/v1/auth/register", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409", rec.Code)
+	}
+}
+```
+
+Replace `contextType` with `context.Context` and add `"context"` to imports — `contextType` is a placeholder to keep this snippet's diff visible; the actual file must import `context` and use `context.Context` directly in both methods.
+
+```go
+// internal/identity/infra/httpapi/login_handler_test.go
+package httpapi
+
+import (
+	"bytes"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+	"time"
+
+	"github.com/AymanKastali/iam-base/internal/identity/app/command"
+	"github.com/AymanKastali/iam-base/internal/identity/domain"
+)
+
+type stubIssuer struct{}
+
+func (stubIssuer) Issue(ctx context.Context, id domain.AccountID) (string, time.Time, error) {
+	return "signed-jwt", time.Now().Add(15 * time.Minute), nil
+}
+
+func TestLoginHandler_ServeHTTP_Success(t *testing.T) {
+	repo := &stubAccountRepo{}
+	registerHandler := command.RegisterAccountHandler{Repo: repo, Hasher: stubHasher{}}
+	if _, err := registerHandler.Handle(context.Background(), command.RegisterAccountCommand{Email: "a@b.com", Password: sampleCredential}); err != nil {
+		t.Fatalf("fixture register: %v", err)
+	}
+
+	h := LoginHandler{Handler: command.LoginHandler{Repo: repo, Hasher: stubHasher{}, Issuer: stubIssuer{}}}
+	body, _ := json.Marshal(map[string]string{"email": "a@b.com", "password": sampleCredential})
+	req := httptest.NewRequest(http.MethodPost, "/v1/auth/login", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body = %s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if resp["access_token"] != "signed-jwt" {
+		t.Errorf("access_token = %v, want signed-jwt", resp["access_token"])
+	}
+}
+
+func TestLoginHandler_ServeHTTP_InvalidCredentials(t *testing.T) {
+	repo := &stubAccountRepo{}
+	h := LoginHandler{Handler: command.LoginHandler{Repo: repo, Hasher: stubHasher{}, Issuer: stubIssuer{}}}
+
+	body, _ := json.Marshal(map[string]string{"email": "missing@b.com", "password": sampleCredential})
+	req := httptest.NewRequest(http.MethodPost, "/v1/auth/login", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", rec.Code)
+	}
+}
+```
+
+Add `"context"` to this test file's imports too.
+
+```go
+// internal/identity/infra/httpapi/jwks_handler_test.go
+package httpapi
+
+import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"github.com/AymanKastali/iam-base/internal/identity/app/query"
+)
+
+type stubJWKSPort struct{ doc query.JWKSDocument }
+
+func (s stubJWKSPort) JWKS() query.JWKSDocument { return s.doc }
+
+func TestJWKSHandler_ServeHTTP(t *testing.T) {
+	doc := query.JWKSDocument{Keys: []query.JWKSKey{{Kty: "RSA", Kid: "1", Alg: "RS256", Use: "sig", N: "n", E: "e"}}}
+	h := JWKSHandler{Handler: query.GetJWKSHandler{Port: stubJWKSPort{doc: doc}}}
+
+	req := httptest.NewRequest(http.MethodGet, "/.well-known/jwks.json", nil)
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	_ = context.Background()
+}
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `go test ./internal/identity/infra/httpapi/... -v`
+Expected: FAIL — `RegisterHandler`/`LoginHandler`/`JWKSHandler` undefined.
+
+- [ ] **Step 3: Write minimal implementation**
+
+```bash
+go get github.com/go-chi/chi/v5
+```
+
+```go
+// internal/identity/infra/httpapi/register_handler.go
+package httpapi
+
+import (
+	"encoding/json"
+	"errors"
+	"net/http"
+
+	"github.com/AymanKastali/iam-base/internal/identity/app/command"
+	"github.com/AymanKastali/iam-base/internal/identity/domain"
+)
+
+type RegisterHandler struct {
+	Handler command.RegisterAccountHandler
+}
+
+type registerRequest struct {
+	Email    string `json:"email"`
+	Password string `json:"password"`
+}
+
+func (h RegisterHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	var req registerRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	id, err := h.Handler.Handle(r.Context(), command.RegisterAccountCommand{Email: req.Email, Password: req.Password})
+	if err != nil {
+		switch {
+		case errors.Is(err, domain.ErrEmailAlreadyRegistered):
+			writeError(w, http.StatusConflict, "email already registered")
+		case errors.Is(err, domain.ErrInvalidEmail):
+			writeError(w, http.StatusBadRequest, "invalid email")
+		default:
+			writeError(w, http.StatusInternalServerError, "internal error")
+		}
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, map[string]string{"id": string(id)})
+}
+
+func writeJSON(w http.ResponseWriter, status int, body any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(body)
+}
+
+func writeError(w http.ResponseWriter, status int, message string) {
+	writeJSON(w, status, map[string]string{"error": message})
+}
+```
+
+```go
+// internal/identity/infra/httpapi/login_handler.go
+package httpapi
+
+import (
+	"encoding/json"
+	"errors"
+	"net/http"
+
+	"github.com/AymanKastali/iam-base/internal/identity/app/command"
+	"github.com/AymanKastali/iam-base/internal/identity/domain"
+)
+
+type LoginHandler struct {
+	Handler command.LoginHandler
+}
+
+type loginRequest struct {
+	Email    string `json:"email"`
+	Password string `json:"password"`
+}
+
+type loginResponse struct {
+	AccessToken string `json:"access_token"`
+	TokenType   string `json:"token_type"`
+	ExpiresAt   string `json:"expires_at"`
+}
+
+func (h LoginHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	var req loginRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	result, err := h.Handler.Handle(r.Context(), command.LoginCommand{Email: req.Email, Password: req.Password})
+	if err != nil {
+		switch {
+		case errors.Is(err, command.ErrInvalidCredentials), errors.Is(err, domain.ErrAccountDisabled):
+			writeError(w, http.StatusUnauthorized, "invalid credentials")
+		default:
+			writeError(w, http.StatusInternalServerError, "internal error")
+		}
+		return
+	}
+
+	writeJSON(w, http.StatusOK, loginResponse{
+		AccessToken: result.AccessToken,
+		TokenType:   "Bearer",
+		ExpiresAt:   result.ExpiresAt.Format(http.TimeFormat),
+	})
+}
+```
+
+```go
+// internal/identity/infra/httpapi/jwks_handler.go
+package httpapi
+
+import (
+	"net/http"
+
+	"github.com/AymanKastali/iam-base/internal/identity/app/query"
+)
+
+type JWKSHandler struct {
+	Handler query.GetJWKSHandler
+}
+
+func (h JWKSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	doc, err := h.Handler.Handle(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	writeJSON(w, http.StatusOK, doc)
+}
+```
+
+```go
+// internal/identity/infra/httpapi/router.go
+package httpapi
+
+import (
+	"net/http"
+
+	"github.com/go-chi/chi/v5"
+)
+
+func NewRouter(register, login, jwks http.Handler, limiter *IPRateLimiter) *chi.Mux {
+	r := chi.NewRouter()
+	r.Method(http.MethodPost, "/v1/auth/register", limiter.Middleware(register))
+	r.Method(http.MethodPost, "/v1/auth/login", limiter.Middleware(login))
+	r.Method(http.MethodGet, "/.well-known/jwks.json", jwks)
+	return r
+}
+```
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `go test ./internal/identity/infra/httpapi/... -v`
+Expected: PASS
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add go.mod go.sum internal/identity/infra/httpapi
+git commit -m "feat(infra): add HTTP handlers and router for register/login/jwks"
+```
+
+---
+
+### Task 11: Composition root (`cmd/server/main.go`)
+
+**Files:**
+- Create: `cmd/server/main.go`
+
+**Interfaces:**
+- Consumes everything from Tasks 1–10: `config.Load`, `postgres.NewAccountRepository`, `passwordhash.Argon2IDHasher`, `jwt.NewRSAIssuer`, `command.RegisterAccountHandler`/`LoginHandler`, `query.GetJWKSHandler`, `httpapi.NewRouter`, `httpapi.NewIPRateLimiter`.
+
+- [ ] **Step 1: Write main.go**
+
+```go
+// cmd/server/main.go
+package main
+
+import (
+	"context"
+	"crypto/x509"
+	"encoding/pem"
+	"errors"
+	"log"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	"github.com/golang-migrate/migrate/v4"
+	_ "github.com/golang-migrate/migrate/v4/database/pgx/v5"
+	_ "github.com/golang-migrate/migrate/v4/source/file"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/AymanKastali/iam-base/internal/config"
+	"github.com/AymanKastali/iam-base/internal/identity/app/command"
+	"github.com/AymanKastali/iam-base/internal/identity/app/query"
+	"github.com/AymanKastali/iam-base/internal/identity/infra/httpapi"
+	"github.com/AymanKastali/iam-base/internal/identity/infra/jwt"
+	"github.com/AymanKastali/iam-base/internal/identity/infra/passwordhash"
+	"github.com/AymanKastali/iam-base/internal/identity/infra/postgres"
+)
+
+type systemClock struct{}
+
+func (systemClock) Now() time.Time { return time.Now() }
+
+func main() {
+	cfg, err := config.Load()
+	if err != nil {
+		log.Fatalf("config: %v", err)
+	}
+
+	ctx := context.Background()
+
+	if err := runMigrations(cfg.DatabaseURL); err != nil {
+		log.Fatalf("migrate: %v", err)
+	}
+
+	pool, err := pgxpool.New(ctx, cfg.DatabaseURL)
+	if err != nil {
+		log.Fatalf("connect postgres: %v", err)
+	}
+	defer pool.Close()
+
+	privateKey, err := loadRSAPrivateKey(cfg.JWTPrivateKeyPath)
+	if err != nil {
+		log.Fatalf("load JWT private key: %v", err)
+	}
+
+	repo := postgres.NewAccountRepository(pool)
+	hasher := passwordhash.Argon2IDHasher{}
+	issuer := jwt.NewRSAIssuer(privateKey, cfg.JWTKeyID, cfg.AccessTokenTTL, systemClock{})
+
+	registerHandler := httpapi.RegisterHandler{Handler: command.RegisterAccountHandler{Repo: repo, Hasher: hasher}}
+	loginHandler := httpapi.LoginHandler{Handler: command.LoginHandler{Repo: repo, Hasher: hasher, Issuer: issuer}}
+	jwksHandler := httpapi.JWKSHandler{Handler: query.GetJWKSHandler{Port: issuer}}
+	limiter := httpapi.NewIPRateLimiter(cfg.RateLimitRPS, cfg.RateLimitBurst)
+
+	router := httpapi.NewRouter(registerHandler, loginHandler, jwksHandler, limiter)
+
+	server := &http.Server{
+		Addr:    ":" + cfg.Port,
+		Handler: router,
+	}
+
+	go func() {
+		log.Printf("listening on :%s", cfg.Port)
+		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Fatalf("listen: %v", err)
+		}
+	}()
+
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
+	<-stop
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		log.Printf("graceful shutdown failed: %v", err)
+	}
+}
+
+func runMigrations(databaseURL string) error {
+	m, err := migrate.New("file://internal/identity/infra/postgres/migrations", databaseURL)
+	if err != nil {
+		return err
+	}
+	if err := m.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
+		return err
+	}
+	return nil
+}
+
+func loadRSAPrivateKey(path string) (*rsaPrivateKey, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	block, _ := pem.Decode(data)
+	if block == nil {
+		return nil, errors.New("invalid PEM in JWT private key file")
+	}
+	key, err := x509.ParsePKCS1PrivateKey(block.Bytes)
+	if err != nil {
+		return nil, err
+	}
+	return key, nil
+}
+```
+
+`loadRSAPrivateKey` returns `*rsa.PrivateKey`; replace the placeholder type name `rsaPrivateKey` with `rsa.PrivateKey` and add `"crypto/rsa"` to the imports — the function signature is `func loadRSAPrivateKey(path string) (*rsa.PrivateKey, error)`.
+
+- [ ] **Step 2: Build and smoke-test locally**
+
+Run:
+```bash
+go build ./...
+```
+Expected: builds cleanly (a running Postgres + a generated key pair are needed to actually start the server — that's Task 12).
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add cmd/server/main.go go.mod go.sum
+git commit -m "feat: wire composition root for the identity HTTP server"
+```
+
+---
+
+### Task 12: Dockerfile, docker-compose, end-to-end smoke test
+
+**Files:**
+- Create: `deployments/Dockerfile`
+- Create: `deployments/docker-compose.yml`
+
+**Interfaces:**
+- Consumes: the built binary from Task 11 (`cmd/server`).
+
+- [ ] **Step 1: Write the Dockerfile**
+
+```dockerfile
+# deployments/Dockerfile
+FROM golang:1.26-alpine AS builder
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 go build -o /out/server ./cmd/server
+
+FROM alpine:3.20
+RUN adduser -D -H iam
+COPY --from=builder /out/server /usr/local/bin/server
+COPY --from=builder /src/internal/identity/infra/postgres/migrations /internal/identity/infra/postgres/migrations
+USER iam
+EXPOSE 8080
+ENTRYPOINT ["/usr/local/bin/server"]
+```
+
+- [ ] **Step 2: Write docker-compose.yml**
+
+```yaml
+# deployments/docker-compose.yml
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: iam
+      POSTGRES_PASSWORD: iam
+      POSTGRES_DB: iam
+    volumes:
+      - iam_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U iam"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  identity:
+    build:
+      context: ..
+      dockerfile: deployments/Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PORT: "8080"
+      DATABASE_URL: "postgres://iam:iam@postgres:5432/iam?sslmode=disable"
+      JWT_PRIVATE_KEY_PATH: "/etc/iam/private.pem"
+      JWT_KEY_ID: "1"
+      ACCESS_TOKEN_TTL: "15m"
+      RATE_LIMIT_RPS: "5"
+      RATE_LIMIT_BURST: "10"
+    volumes:
+      - ./keys:/etc/iam:ro
+    ports:
+      - "8080:8080"
+
+volumes:
+  iam_pg_data:
+```
+
+- [ ] **Step 3: Generate a local JWT signing key and run the stack**
+
+Run:
+```bash
+mkdir -p deployments/keys
+openssl genrsa -out deployments/keys/private.pem 2048
+docker compose -f deployments/docker-compose.yml up --build -d
+```
+Expected: both containers start; `docker compose -f deployments/docker-compose.yml ps` shows `identity` and `postgres` as running/healthy.
+
+- [ ] **Step 4: Smoke-test the running stack**
+
+Run:
+```bash
+curl -s -X POST http://localhost:8080/v1/auth/register \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"smoke@test.com","password":"secret123"}'
+```
+Expected: HTTP 201 with `{"id":"<uuid>"}`.
+
+```bash
+curl -s -X POST http://localhost:8080/v1/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"smoke@test.com","password":"secret123"}'
+```
+Expected: HTTP 200 with `{"access_token":"...","token_type":"Bearer","expires_at":"..."}`.
+
+```bash
+curl -s http://localhost:8080/.well-known/jwks.json
+```
+Expected: HTTP 200 with `{"keys":[{"kty":"RSA","use":"sig","kid":"1","alg":"RS256","n":"...","e":"..."}]}`.
+
+- [ ] **Step 5: Tear down and commit**
+
+```bash
+docker compose -f deployments/docker-compose.yml down
+git add deployments
+git commit -m "feat: add Dockerfile and docker-compose for self-hosted deployment"
+```
+
+Note: `deployments/keys/` (the generated private key) must **not** be committed — add `deployments/keys/` to `.gitignore` before this step if it isn't already ignored.
+
+---
+
+## Self-Review Notes
+
+- **Spec coverage:** register (Task 7/10), login with access-token-only JWT (Task 8/10), JWKS (Task 6/10), RS256 + 15m TTL (Global Constraints, Task 6), Postgres persistence with unique-email invariant (Task 5), argon2id hashing (Task 4), per-IP rate limiting on register/login (Task 9/10), Docker Compose self-deploy (Task 12). Refresh tokens, email verification, and password reset are explicitly out of scope (slice 2 / phase 2 per the design doc).
+- **Type consistency:** `domain.AccountID` (string) flows unchanged from `Account` → `AccountRepository` → command handlers → HTTP responses; `app.PasswordHasher`/`app.AccountRepository`/`app.TokenIssuer` signatures match between `ports.go`, the fakes in tests, and the concrete adapters.
+- **No placeholders:** two intentional exceptions are called out explicitly in-line (Task 10's `contextType`, Task 11's `rsaPrivateKey`) with the exact real type to substitute, so the plan stays copy-pasteable without ambiguity.
+
+---
+
+## Backlog (later slices, not this plan)
+
+- **Slice 2 — Refresh & logout:** `RefreshTokenFamily` aggregate, refresh-token table, `POST /v1/auth/refresh` (rotate + reuse detection), `POST /v1/auth/logout` (revoke a family). Prepare via a separate `/revai:prepare` run against `docs/design/iam-base-service.md`'s slice 2 once slice 1 has shipped.
+- **Phase 2 (design-level, not yet scheduled):** email verification, password reset, per-client OAuth2 scopes.
