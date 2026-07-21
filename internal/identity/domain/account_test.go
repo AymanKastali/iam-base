@@ -5,14 +5,14 @@ import (
 	"testing"
 )
 
-func TestNewAccount(t *testing.T) {
+func TestRegister(t *testing.T) {
 	email, _ := NewEmail("a@b.com")
 	cred, _ := NewCredential("hash", "argon2id", 1)
 	id, _ := NewAccountID("11111111-1111-1111-1111-111111111111")
 
-	acc, err := NewAccount(id, email, cred)
+	acc, err := Register(id, email, cred)
 	if err != nil {
-		t.Fatalf("NewAccount() error = %v, want nil", err)
+		t.Fatalf("Register() error = %v, want nil", err)
 	}
 	if acc.ID() != id {
 		t.Errorf("ID() = %v, want %v", acc.ID(), id)
@@ -25,14 +25,14 @@ func TestNewAccount(t *testing.T) {
 	}
 }
 
-func TestNewAccount_RecordsAccountRegisteredEvent(t *testing.T) {
+func TestRegister_RecordsAccountRegisteredEvent(t *testing.T) {
 	email, _ := NewEmail("a@b.com")
 	cred, _ := NewCredential("hash", "argon2id", 1)
 	id, _ := NewAccountID("11111111-1111-1111-1111-111111111111")
 
-	acc, err := NewAccount(id, email, cred)
+	acc, err := Register(id, email, cred)
 	if err != nil {
-		t.Fatalf("NewAccount() error = %v, want nil", err)
+		t.Fatalf("Register() error = %v, want nil", err)
 	}
 
 	events := acc.RecordedEvents()
@@ -54,9 +54,9 @@ func newTestAccount(t *testing.T) *Account {
 	cred, _ := NewCredential("hash", "argon2id", 1)
 	id, _ := NewAccountID("11111111-1111-1111-1111-111111111111")
 
-	acc, err := NewAccount(id, email, cred)
+	acc, err := Register(id, email, cred)
 	if err != nil {
-		t.Fatalf("NewAccount() error = %v, want nil", err)
+		t.Fatalf("Register() error = %v, want nil", err)
 	}
 	return acc
 }

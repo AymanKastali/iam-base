@@ -10,7 +10,7 @@ type Account struct {
 	status     AccountStatus
 }
 
-func NewAccount(id AccountID, email Email, credential Credential) (*Account, error) {
+func Register(id AccountID, email Email, credential Credential) (*Account, error) {
 	account := &Account{
 		AggregateRoot: NewAggregateRoot(id),
 		email:         email,
