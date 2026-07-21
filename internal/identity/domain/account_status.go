@@ -13,3 +13,17 @@ func (s AccountStatus) String() string {
 	}
 	return "active"
 }
+
+// ParseAccountStatus parses AccountStatus.String()'s output back into an
+// AccountStatus — the repository adapter's counterpart for rehydrating a
+// persisted account.
+func ParseAccountStatus(raw string) (AccountStatus, error) {
+	switch raw {
+	case "active":
+		return StatusActive, nil
+	case "disabled":
+		return StatusDisabled, nil
+	default:
+		return 0, ErrInvalidAccountStatus
+	}
+}

@@ -11,4 +11,5 @@ var (
 	ErrInvalidAccountID       = errors.New("invalid account id")
 	ErrAccountAlreadyDisabled = errors.New("account already disabled")
 	ErrAccountAlreadyActive   = errors.New("account already active")
+	ErrInvalidAccountStatus   = errors.New("invalid account status")
 )

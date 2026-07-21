@@ -30,7 +30,7 @@ func (r *AccountRepository) Save(ctx context.Context, account *domain.Account) e
 		account.Credential().Hash(),
 		account.Credential().Algo(),
 		account.Credential().Version(),
-		statusString(account.Status()),
+		account.Status().String(),
 	)
 	if err != nil {
 		var pgErr *pgconn.PgError
@@ -71,12 +71,9 @@ func (r *AccountRepository) FindByEmail(ctx context.Context, email domain.Email)
 	if err != nil {
 		return nil, err
 	}
-	return domain.Register(accountID, e, cred)
-}
-
-func statusString(s domain.AccountStatus) string {
-	if s == domain.StatusDisabled {
-		return "disabled"
+	accountStatus, err := domain.ParseAccountStatus(status)
+	if err != nil {
+		return nil, err
 	}
-	return "active"
+	return domain.Reconstitute(accountID, e, cred, accountStatus), nil
 }

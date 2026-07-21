@@ -92,6 +92,33 @@ func TestAccountRepository_SaveAndFindByEmail(t *testing.T) {
 	if found.ID() != acc.ID() {
 		t.Errorf("FindByEmail().ID() = %v, want %v", found.ID(), acc.ID())
 	}
+	if found.Status() != acc.Status() || !found.IsActive() {
+		t.Errorf("FindByEmail().Status() = %v, want %v (active)", found.Status(), acc.Status())
+	}
+}
+
+func TestAccountRepository_FindByEmail_PreservesDisabledStatus(t *testing.T) {
+	repo := newTestRepo(t)
+	ctx := context.Background()
+	acc := newTestAccount(t, "disabled@b.com")
+	if err := acc.Disable(); err != nil {
+		t.Fatalf("fixture Disable: %v", err)
+	}
+
+	if err := repo.Save(ctx, acc); err != nil {
+		t.Fatalf("Save() error = %v, want nil", err)
+	}
+
+	found, err := repo.FindByEmail(ctx, acc.Email())
+	if err != nil {
+		t.Fatalf("FindByEmail() error = %v, want nil", err)
+	}
+	if found.Status() != domain.StatusDisabled || found.IsActive() {
+		t.Errorf("FindByEmail().Status() = %v, want StatusDisabled — a disabled account must not silently reactivate on load", found.Status())
+	}
+	if events := found.RecordedEvents(); len(events) != 0 {
+		t.Errorf("FindByEmail() recorded %d events, want 0 — loading is not a new registration", len(events))
+	}
 }
 
 func TestAccountRepository_Save_DuplicateEmail(t *testing.T) {
