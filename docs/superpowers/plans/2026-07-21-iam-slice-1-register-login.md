@@ -35,6 +35,7 @@ internal/
       credential.go
       account.go
       errors.go
+      repository.go
       email_test.go
       credential_test.go
       account_test.go
@@ -515,15 +516,30 @@ git commit -m "feat(domain): add Account aggregate"
 ### Task 4: PasswordHasher port + argon2id adapter
 
 **Files:**
+- Create: `internal/identity/domain/repository.go`
 - Create: `internal/identity/app/ports.go`
 - Create: `internal/identity/infra/passwordhash/argon2.go`
 - Test: `internal/identity/infra/passwordhash/argon2_test.go`
 
 **Interfaces:**
-- Consumes: `domain.Credential`, `domain.Account`.
-- Produces: `app.AccountRepository`, `app.PasswordHasher`, `app.TokenIssuer`, `app.Clock` (interfaces), `passwordhash.Argon2IDHasher{}` implementing `app.PasswordHasher`.
+- Consumes: `domain.Credential`, `domain.Account`, `domain.Email`.
+- Produces: `domain.AccountRepository` (the write-repository port — declared in `domain`, per `hexagonal-architecture`: the domain layer owns the write-repository ports it needs, not the app layer), `app.PasswordHasher`, `app.TokenIssuer`, `app.Clock` (application-service ports), `passwordhash.Argon2IDHasher{}` implementing `app.PasswordHasher`.
 
 - [ ] **Step 1: Write the ports (no test — pure interfaces)**
+
+```go
+// internal/identity/domain/repository.go
+package domain
+
+import "context"
+
+// AccountRepository is the write-repository port for the Account aggregate.
+// The domain declares it; infra/postgres provides the adapter.
+type AccountRepository interface {
+	Save(ctx context.Context, account *Account) error
+	FindByEmail(ctx context.Context, email Email) (*Account, error)
+}
+```
 
 ```go
 // internal/identity/app/ports.go
@@ -535,11 +551,6 @@ import (
 
 	"github.com/AymanKastali/iam-base/internal/identity/domain"
 )
-
-type AccountRepository interface {
-	Save(ctx context.Context, account *domain.Account) error
-	FindByEmail(ctx context.Context, email domain.Email) (*domain.Account, error)
-}
 
 type PasswordHasher interface {
 	Hash(password string) (domain.Credential, error)
@@ -633,7 +644,7 @@ Expected: PASS
 - [ ] **Step 6: Commit**
 
 ```bash
-git add go.mod go.sum internal/identity/app/ports.go internal/identity/infra/passwordhash
+git add go.mod go.sum internal/identity/domain/repository.go internal/identity/app/ports.go internal/identity/infra/passwordhash
 git commit -m "feat(infra): add argon2id password hasher"
 ```
 
@@ -648,8 +659,8 @@ git commit -m "feat(infra): add argon2id password hasher"
 - Test: `internal/identity/infra/postgres/account_repo_test.go`
 
 **Interfaces:**
-- Consumes: `app.AccountRepository`, `domain.Account`, `domain.Email`, `domain.NewAccount`.
-- Produces: `postgres.AccountRepository{pool *pgxpool.Pool}` implementing `app.AccountRepository`.
+- Consumes: `domain.AccountRepository`, `domain.Account`, `domain.Email`, `domain.NewAccount`.
+- Produces: `postgres.AccountRepository{pool *pgxpool.Pool}` implementing `domain.AccountRepository`.
 
 - [ ] **Step 1: Write the migration**
 
@@ -1133,8 +1144,8 @@ git commit -m "feat(infra): add RS256 JWT issuer and JWKS query"
 - Test: `internal/identity/app/command/register_test.go`
 
 **Interfaces:**
-- Consumes: `app.AccountRepository`, `app.PasswordHasher`, `domain.NewEmail`, `domain.NewAccount`, `domain.NewAccountID`.
-- Produces: `command.RegisterAccountCommand{Email, Password string}`, `command.RegisterAccountHandler{Repo app.AccountRepository, Hasher app.PasswordHasher}` (`Handle(ctx, cmd) (domain.AccountID, error)`).
+- Consumes: `domain.AccountRepository`, `app.PasswordHasher`, `domain.NewEmail`, `domain.NewAccount`, `domain.NewAccountID`.
+- Produces: `command.RegisterAccountCommand{Email, Password string}`, `command.RegisterAccountHandler{Repo domain.AccountRepository, Hasher app.PasswordHasher}` (`Handle(ctx, cmd) (domain.AccountID, error)`).
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1264,7 +1275,7 @@ type RegisterAccountCommand struct {
 }
 
 type RegisterAccountHandler struct {
-	Repo   app.AccountRepository
+	Repo   domain.AccountRepository
 	Hasher app.PasswordHasher
 }
 
@@ -1309,8 +1320,8 @@ git commit -m "feat(app): add RegisterAccount command handler"
 - Test: `internal/identity/app/command/login_test.go`
 
 **Interfaces:**
-- Consumes: `app.AccountRepository`, `app.PasswordHasher`, `app.TokenIssuer` (Tasks 4, 6), fakes from Task 7's test file (`fakeAccountRepo`, `fakeHasher` — same package `command`).
-- Produces: `command.LoginCommand{Email, Password string}`, `command.LoginResult{AccessToken string, ExpiresAt time.Time}`, `command.LoginHandler{Repo app.AccountRepository, Hasher app.PasswordHasher, Issuer app.TokenIssuer}` (`Handle(ctx, cmd) (LoginResult, error)`), `command.ErrInvalidCredentials`.
+- Consumes: `domain.AccountRepository`, `app.PasswordHasher`, `app.TokenIssuer` (Tasks 4, 6), fakes from Task 7's test file (`fakeAccountRepo`, `fakeHasher` — same package `command`).
+- Produces: `command.LoginCommand{Email, Password string}`, `command.LoginResult{AccessToken string, ExpiresAt time.Time}`, `command.LoginHandler{Repo domain.AccountRepository, Hasher app.PasswordHasher, Issuer app.TokenIssuer}` (`Handle(ctx, cmd) (LoginResult, error)`), `command.ErrInvalidCredentials`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1418,7 +1429,7 @@ type LoginResult struct {
 }
 
 type LoginHandler struct {
-	Repo   app.AccountRepository
+	Repo   domain.AccountRepository
 	Hasher app.PasswordHasher
 	Issuer app.TokenIssuer
 }
@@ -2226,7 +2237,7 @@ Note: `deployments/keys/` (the generated private key) must **not** be committed 
 ## Self-Review Notes
 
 - **Spec coverage:** register (Task 7/10), login with access-token-only JWT (Task 8/10), JWKS (Task 6/10), RS256 + 15m TTL (Global Constraints, Task 6), Postgres persistence with unique-email invariant (Task 5), argon2id hashing (Task 4), per-IP rate limiting on register/login (Task 9/10), Docker Compose self-deploy (Task 12). Refresh tokens, email verification, and password reset are explicitly out of scope (slice 2 / phase 2 per the design doc).
-- **Type consistency:** `domain.AccountID` (string) flows unchanged from `Account` → `AccountRepository` → command handlers → HTTP responses; `app.PasswordHasher`/`app.AccountRepository`/`app.TokenIssuer` signatures match between `ports.go`, the fakes in tests, and the concrete adapters.
+- **Type consistency:** `domain.AccountID` (string) flows unchanged from `Account` → `AccountRepository` → command handlers → HTTP responses; `app.PasswordHasher`/`domain.AccountRepository`/`app.TokenIssuer` signatures match between `ports.go`, the fakes in tests, and the concrete adapters.
 - **No placeholders:** two intentional exceptions are called out explicitly in-line (Task 10's `contextType`, Task 11's `rsaPrivateKey`) with the exact real type to substitute, so the plan stays copy-pasteable without ambiguity.
 
 ---
