@@ -27,14 +27,27 @@ func (a *Account) Status() AccountStatus  { return a.status }
 func (a *Account) IsActive() bool         { return a.status == StatusActive }
 
 // Disable marks the account disabled — a disabled account can no longer
-// authenticate (see EnsureActive).
-func (a *Account) Disable() {
+// authenticate (see EnsureActive). Disabling an already-disabled account is
+// rejected as an illegal transition, not a silent no-op.
+func (a *Account) Disable() error {
+	if a.status == StatusDisabled {
+		return ErrAccountAlreadyDisabled
+	}
 	a.status = StatusDisabled
+	a.RecordEvent(AccountDisabled{AccountID: a.ID()})
+	return nil
 }
 
-// Activate marks the account active again.
-func (a *Account) Activate() {
+// Activate marks a disabled account active again. Activating an
+// already-active account is rejected as an illegal transition, not a
+// silent no-op.
+func (a *Account) Activate() error {
+	if a.status == StatusActive {
+		return ErrAccountAlreadyActive
+	}
 	a.status = StatusActive
+	a.RecordEvent(AccountActivated{AccountID: a.ID()})
+	return nil
 }
 
 // EnsureActive enforces the login-eligibility invariant: a disabled account
