@@ -25,9 +25,10 @@
 ```
 go.mod
 internal/
-  config/
-    config.go
-    config_test.go
+  infra/
+    config/
+      config.go
+      config_test.go
   identity/
     domain/
       email.go
@@ -84,8 +85,8 @@ deployments/
 
 **Files:**
 - Create: `go.mod`
-- Create: `internal/config/config.go`
-- Test: `internal/config/config_test.go`
+- Create: `internal/infra/config/config.go`
+- Test: `internal/infra/config/config_test.go`
 
 **Interfaces:**
 - Produces: `config.Config{Port, DatabaseURL, JWTPrivateKeyPath, JWTKeyID string; AccessTokenTTL time.Duration; RateLimitRPS float64; RateLimitBurst int}`, `config.Load() (Config, error)`.
@@ -100,7 +101,7 @@ go mod init github.com/AymanKastali/iam-base
 - [ ] **Step 2: Write the failing test**
 
 ```go
-// internal/config/config_test.go
+// internal/infra/config/config_test.go
 package config
 
 import (
@@ -142,13 +143,13 @@ func TestLoad_MissingRequired(t *testing.T) {
 
 - [ ] **Step 3: Run test to verify it fails**
 
-Run: `go test ./internal/config/... -run TestLoad -v`
+Run: `go test ./internal/infra/config/... -run TestLoad -v`
 Expected: FAIL — `config.Load` undefined.
 
 - [ ] **Step 4: Write minimal implementation**
 
 ```go
-// internal/config/config.go
+// internal/infra/config/config.go
 package config
 
 import (
@@ -221,13 +222,13 @@ func getEnv(key, fallback string) string {
 
 - [ ] **Step 5: Run test to verify it passes**
 
-Run: `go test ./internal/config/... -v`
+Run: `go test ./internal/infra/config/... -v`
 Expected: PASS
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add go.mod internal/config
+git add go.mod internal/infra/config
 git commit -m "feat(config): add env-based config loading"
 ```
 
@@ -1989,7 +1990,7 @@ import (
 	_ "github.com/golang-migrate/migrate/v4/source/file"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/AymanKastali/iam-base/internal/config"
+	"github.com/AymanKastali/iam-base/internal/infra/config"
 	"github.com/AymanKastali/iam-base/internal/identity/app/command"
 	"github.com/AymanKastali/iam-base/internal/identity/app/query"
 	"github.com/AymanKastali/iam-base/internal/identity/infra/httpapi"

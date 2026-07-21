@@ -1,3 +1,5 @@
+// Package config loads the identity service's configuration from the
+// environment, failing fast when a required value is missing or invalid.
 package config
 
 import (
