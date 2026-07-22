@@ -6,7 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/AymanKastali/iam-base/internal/identity/app/query"
+	"github.com/AymanKastali/iam-base/internal/app/query"
 )
 
 type stubJWKSPort struct{ doc query.JWKSDocument }

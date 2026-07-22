@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/AymanKastali/iam-base/internal/identity/domain"
+	"github.com/AymanKastali/iam-base/internal/domain"
 )
 
 type PasswordHasher interface {

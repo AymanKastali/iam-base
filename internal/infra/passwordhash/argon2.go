@@ -4,7 +4,7 @@ package passwordhash
 import (
 	"github.com/alexedwards/argon2id"
 
-	"github.com/AymanKastali/iam-base/internal/identity/domain"
+	"github.com/AymanKastali/iam-base/internal/domain"
 )
 
 const algName = "argon2id"

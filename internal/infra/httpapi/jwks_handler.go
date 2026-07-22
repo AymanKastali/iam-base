@@ -4,7 +4,7 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/AymanKastali/iam-base/internal/identity/app/query"
+	"github.com/AymanKastali/iam-base/internal/app/query"
 )
 
 type JWKSHandler struct {

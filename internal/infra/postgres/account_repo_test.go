@@ -9,7 +9,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
-	"github.com/AymanKastali/iam-base/internal/identity/domain"
+	"github.com/AymanKastali/iam-base/internal/domain"
 )
 
 func newTestRepo(t *testing.T) *AccountRepository {

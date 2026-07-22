@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/AymanKastali/iam-base/internal/identity/app/command"
-	"github.com/AymanKastali/iam-base/internal/identity/domain"
+	"github.com/AymanKastali/iam-base/internal/app/command"
+	"github.com/AymanKastali/iam-base/internal/domain"
 )
 
 // sampleCredential is a fixture value, not a secret — named so it never reads

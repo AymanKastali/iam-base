@@ -5,8 +5,8 @@ import (
 	"errors"
 	"time"
 
-	"github.com/AymanKastali/iam-base/internal/identity/app"
-	"github.com/AymanKastali/iam-base/internal/identity/domain"
+	"github.com/AymanKastali/iam-base/internal/app"
+	"github.com/AymanKastali/iam-base/internal/domain"
 )
 
 var ErrInvalidCredentials = errors.New("invalid credentials")

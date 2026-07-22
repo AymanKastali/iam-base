@@ -1,4 +1,4 @@
-// internal/identity/app/command/login_test.go
+// internal/app/command/login_test.go
 package command
 
 import (
@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/AymanKastali/iam-base/internal/identity/domain"
+	"github.com/AymanKastali/iam-base/internal/domain"
 )
 
 type fakeIssuer struct {

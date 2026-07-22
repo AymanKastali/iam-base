@@ -62,8 +62,8 @@ refresh tokens) — no other module or service reads those tables directly; ever
 through the HTTP API and JWKS (see §8).
 
 ```
-cmd/server/                    — composition root: config load, wire adapters, start HTTP server
-internal/identity/
+cmd/server/                    — entrypoint: load config, build the app, run/shut down the server
+internal/
   domain/                      — Account, Credential, RefreshTokenFamily, value objects, domain errors
   app/
     command/                  — RegisterAccount, Authenticate, RotateRefreshToken, RevokeSession
@@ -71,14 +71,21 @@ internal/identity/
     ports.go                  — AccountRepository, RefreshTokenRepository, PasswordHasher,
                                  TokenIssuer, Clock (all interfaces; no concrete types)
   infra/
+    composition/              — composition root: wires every adapter and use-case handler
+    config/                   — env-based config loading
     httpapi/                  — REST handlers, routing, middleware, JWKS response
-    postgres/                 — repository implementations (pgx + sqlc), migrations
+    postgres/                 — repository implementations (pgx), migrations
     jwt/                      — TokenIssuer implementation (golang-jwt), signing-key management
     passwordhash/             — PasswordHasher implementation (argon2id)
 deployments/
   Dockerfile
   docker-compose.yml           — service + postgres
 ```
+
+There is exactly one bounded context in this service, so its three layers — `domain`, `app`,
+`infra` — sit directly under `internal/`, with no extra per-context wrapper folder. Composition and
+config are both infra concerns (wiring adapters, reading the environment) and live under `infra/`
+alongside the other adapters.
 
 ## 6. Layers & CQRS per module
 

@@ -1,4 +1,4 @@
-// internal/identity/app/command/register_test.go
+// internal/app/command/register_test.go
 package command
 
 import (
@@ -6,7 +6,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/AymanKastali/iam-base/internal/identity/domain"
+	"github.com/AymanKastali/iam-base/internal/domain"
 )
 
 // sampleCredential is a fixture value, not a secret — kept as a named constant

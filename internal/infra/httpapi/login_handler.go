@@ -5,8 +5,8 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/AymanKastali/iam-base/internal/identity/app/command"
-	"github.com/AymanKastali/iam-base/internal/identity/domain"
+	"github.com/AymanKastali/iam-base/internal/app/command"
+	"github.com/AymanKastali/iam-base/internal/domain"
 )
 
 type LoginHandler struct {

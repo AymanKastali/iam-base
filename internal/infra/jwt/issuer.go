@@ -9,9 +9,9 @@ import (
 
 	jwtlib "github.com/golang-jwt/jwt/v5"
 
-	"github.com/AymanKastali/iam-base/internal/identity/app"
-	"github.com/AymanKastali/iam-base/internal/identity/app/query"
-	"github.com/AymanKastali/iam-base/internal/identity/domain"
+	"github.com/AymanKastali/iam-base/internal/app"
+	"github.com/AymanKastali/iam-base/internal/app/query"
+	"github.com/AymanKastali/iam-base/internal/domain"
 )
 
 type RSAIssuer struct {

@@ -11,7 +11,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/AymanKastali/iam-base/internal/composition"
+	"github.com/AymanKastali/iam-base/internal/infra/composition"
 	"github.com/AymanKastali/iam-base/internal/infra/config"
 )
 

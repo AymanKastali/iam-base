@@ -11,7 +11,7 @@ import (
 
 	jwtlib "github.com/golang-jwt/jwt/v5"
 
-	"github.com/AymanKastali/iam-base/internal/identity/domain"
+	"github.com/AymanKastali/iam-base/internal/domain"
 )
 
 type fixedClock struct{ now time.Time }

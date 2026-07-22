@@ -11,13 +11,13 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/AymanKastali/iam-base/internal/identity/app/command"
-	"github.com/AymanKastali/iam-base/internal/identity/app/query"
-	"github.com/AymanKastali/iam-base/internal/identity/infra/httpapi"
-	"github.com/AymanKastali/iam-base/internal/identity/infra/jwt"
-	"github.com/AymanKastali/iam-base/internal/identity/infra/passwordhash"
-	"github.com/AymanKastali/iam-base/internal/identity/infra/postgres"
+	"github.com/AymanKastali/iam-base/internal/app/command"
+	"github.com/AymanKastali/iam-base/internal/app/query"
 	"github.com/AymanKastali/iam-base/internal/infra/config"
+	"github.com/AymanKastali/iam-base/internal/infra/httpapi"
+	"github.com/AymanKastali/iam-base/internal/infra/jwt"
+	"github.com/AymanKastali/iam-base/internal/infra/passwordhash"
+	"github.com/AymanKastali/iam-base/internal/infra/postgres"
 )
 
 type systemClock struct{}

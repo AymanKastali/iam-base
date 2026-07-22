@@ -9,8 +9,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/AymanKastali/iam-base/internal/identity/app"
-	"github.com/AymanKastali/iam-base/internal/identity/domain"
+	"github.com/AymanKastali/iam-base/internal/app"
+	"github.com/AymanKastali/iam-base/internal/domain"
 )
 
 const minPasswordLength = 8
