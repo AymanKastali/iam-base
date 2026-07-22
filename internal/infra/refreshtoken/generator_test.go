@@ -40,7 +40,9 @@ func TestSHA256Generator_Generate_ProducesDistinctSecrets(t *testing.T) {
 func TestSHA256Generator_Hash_Deterministic(t *testing.T) {
 	gen := SHA256Generator{}
 
-	if gen.Hash("same-input") != gen.Hash("same-input") {
+	first := gen.Hash("same-input")
+	second := gen.Hash("same-input")
+	if first != second {
 		t.Error("Hash() must be deterministic for the same input")
 	}
 	if gen.Hash("a") == gen.Hash("b") {
