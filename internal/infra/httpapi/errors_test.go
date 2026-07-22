@@ -37,6 +37,13 @@ func TestMapAppError_KindedError(t *testing.T) {
 			if statusErr.Error() != "boom" {
 				t.Errorf("message = %q, want %q", statusErr.Error(), "boom")
 			}
+			errorModel, ok := mapped.(*huma.ErrorModel)
+			if !ok {
+				t.Fatalf("mapAppError() = %T, want *huma.ErrorModel", mapped)
+			}
+			if errorModel.Type != "some_code" {
+				t.Errorf("Type = %q, want %q (the app.Error's Code, carried through as RFC 9457's machine-readable identifier)", errorModel.Type, "some_code")
+			}
 		})
 	}
 }

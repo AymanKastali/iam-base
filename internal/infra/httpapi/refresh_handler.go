@@ -12,9 +12,16 @@ type RefreshHandler struct {
 	Handler command.RotateRefreshTokenHandler
 }
 
+// RefreshInput deliberately carries no `required` validation tag, and
+// `omitempty` so Huma doesn't infer it as required either (verified: a
+// non-pointer field without `omitempty` defaults to required in Huma's
+// generated schema regardless of an explicit `required` tag). A missing
+// token must reach RotateRefreshTokenHandler.Handle, not be rejected
+// upfront, so it returns the same ErrInvalidRefreshToken regardless of why
+// the token is invalid — see app.ErrInvalidRefreshToken.
 type RefreshInput struct {
 	Body struct {
-		RefreshToken string `json:"refresh_token" required:"true"`
+		RefreshToken string `json:"refresh_token,omitempty"`
 	}
 }
 

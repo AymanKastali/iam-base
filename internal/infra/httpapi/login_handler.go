@@ -11,10 +11,18 @@ type LoginHandler struct {
 	Handler command.LoginHandler
 }
 
+// LoginInput deliberately carries no `required`/`format` validation tags,
+// and `omitempty` so Huma doesn't infer them as required either (verified: a
+// non-pointer field without `omitempty` defaults to required in Huma's
+// generated schema regardless of an explicit `required` tag). Every
+// malformed or missing credential must reach LoginHandler.Handle, not be
+// rejected upfront, so it returns the same ErrInvalidCredentials with the
+// same timing padding regardless of why the login failed — see
+// app.ErrInvalidCredentials.
 type LoginInput struct {
 	Body struct {
-		Email    string `json:"email" required:"true" format:"email"`
-		Password string `json:"password" required:"true"`
+		Email    string `json:"email,omitempty"`
+		Password string `json:"password,omitempty"`
 	}
 }
 

@@ -80,3 +80,43 @@ func TestNewRouter_ServesOpenAPIAndDocs(t *testing.T) {
 		}
 	}
 }
+
+// Login and refresh failures must be indistinguishable regardless of cause
+// (see app.ErrInvalidCredentials/app.ErrInvalidRefreshToken) — a malformed
+// or missing field must reach the handler and come back as the same uniform
+// 401, not get intercepted by Huma's request-schema validator as a 422.
+func TestNewRouter_LoginMalformedOrMissingFields_StillUniform401(t *testing.T) {
+	router := newTestRouter(NewIPRateLimiter(1000, 1000))
+
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"malformed_email", `{"email":"not-an-email","password":"secret123"}`},
+		{"missing_password", `{"email":"a@b.com"}`},
+		{"missing_email", `{"password":"secret123"}`},
+		{"empty_body", `{}`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/v1/auth/login", bytes.NewReader([]byte(c.body)))
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+			if rec.Code != http.StatusUnauthorized {
+				t.Errorf("status = %d, want 401, body = %s", rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestNewRouter_RefreshMissingToken_StillUniform401(t *testing.T) {
+	router := newTestRouter(NewIPRateLimiter(1000, 1000))
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/auth/refresh", bytes.NewReader([]byte(`{}`)))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401, body = %s", rec.Code, rec.Body.String())
+	}
+}
