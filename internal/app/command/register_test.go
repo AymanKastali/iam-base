@@ -58,6 +58,10 @@ func (fakeIDGenerator) NewAccountID() (domain.AccountID, error) {
 	return domain.NewAccountID("fake-account-id")
 }
 
+func (fakeIDGenerator) NewFamilyID() (domain.FamilyID, error) {
+	return domain.NewFamilyID("fake-family-id")
+}
+
 func TestRegisterAccountHandler_Handle(t *testing.T) {
 	repo := newFakeAccountRepo()
 	h := RegisterAccountHandler{Repo: repo, Hasher: fakeHasher{}, Policy: domain.MinLengthPasswordPolicy{}, IDGen: fakeIDGenerator{}}
