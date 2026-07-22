@@ -35,3 +35,30 @@ func TestLoad_MissingRequired(t *testing.T) {
 		t.Fatal("Load() error = nil, want error for missing DATABASE_URL/JWT_PRIVATE_KEY_PATH")
 	}
 }
+
+func TestLoad_Defaults_IncludesRefreshTokenTTL(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://user:pass@localhost:5432/iam?sslmode=disable")
+	t.Setenv("JWT_PRIVATE_KEY_PATH", "/etc/iam/private.pem")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v, want nil", err)
+	}
+	if cfg.RefreshTokenTTL != 30*24*time.Hour {
+		t.Errorf("RefreshTokenTTL = %v, want 720h (30 days)", cfg.RefreshTokenTTL)
+	}
+}
+
+func TestLoad_RefreshTokenTTL_Override(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://user:pass@localhost:5432/iam?sslmode=disable")
+	t.Setenv("JWT_PRIVATE_KEY_PATH", "/etc/iam/private.pem")
+	t.Setenv("REFRESH_TOKEN_TTL", "1h")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v, want nil", err)
+	}
+	if cfg.RefreshTokenTTL != time.Hour {
+		t.Errorf("RefreshTokenTTL = %v, want 1h", cfg.RefreshTokenTTL)
+	}
+}

@@ -16,6 +16,7 @@ type Config struct {
 	JWTPrivateKeyPath string
 	JWTKeyID          string
 	AccessTokenTTL    time.Duration
+	RefreshTokenTTL   time.Duration
 	RateLimitRPS      float64
 	RateLimitBurst    int
 }
@@ -27,6 +28,7 @@ func Load() (Config, error) {
 		JWTPrivateKeyPath: os.Getenv("JWT_PRIVATE_KEY_PATH"),
 		JWTKeyID:          getEnv("JWT_KEY_ID", "1"),
 		AccessTokenTTL:    15 * time.Minute,
+		RefreshTokenTTL:   30 * 24 * time.Hour,
 		RateLimitRPS:      5,
 		RateLimitBurst:    10,
 	}
@@ -37,6 +39,13 @@ func Load() (Config, error) {
 			return Config{}, fmt.Errorf("invalid ACCESS_TOKEN_TTL: %w", err)
 		}
 		cfg.AccessTokenTTL = d
+	}
+	if ttl := os.Getenv("REFRESH_TOKEN_TTL"); ttl != "" {
+		d, err := time.ParseDuration(ttl)
+		if err != nil {
+			return Config{}, fmt.Errorf("invalid REFRESH_TOKEN_TTL: %w", err)
+		}
+		cfg.RefreshTokenTTL = d
 	}
 	if rps := os.Getenv("RATE_LIMIT_RPS"); rps != "" {
 		v, err := strconv.ParseFloat(rps, 64)
