@@ -151,17 +151,17 @@ func TestAccount_Activate_RecordsAccountActivatedEvent(t *testing.T) {
 	}
 }
 
-func TestAccount_EnsureActive(t *testing.T) {
+func TestAccount_Login(t *testing.T) {
 	acc := newTestAccount(t)
 
-	if err := acc.EnsureActive(); err != nil {
-		t.Errorf("EnsureActive() on a new account = %v, want nil", err)
+	if err := acc.Login(); err != nil {
+		t.Errorf("Login() on a new account = %v, want nil", err)
 	}
 
 	if err := acc.Disable(); err != nil {
 		t.Fatalf("Disable() error = %v, want nil", err)
 	}
-	if err := acc.EnsureActive(); !errors.Is(err, ErrAccountDisabled) {
-		t.Errorf("EnsureActive() on a disabled account = %v, want ErrAccountDisabled", err)
+	if err := acc.Login(); !errors.Is(err, ErrAccountDisabled) {
+		t.Errorf("Login() on a disabled account = %v, want ErrAccountDisabled", err)
 	}
 }

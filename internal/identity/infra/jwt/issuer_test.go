@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"encoding/base64"
+	"math/big"
 	"testing"
 	"time"
 
@@ -59,5 +61,22 @@ func TestRSAIssuer_JWKS(t *testing.T) {
 	k := doc.Keys[0]
 	if k.Kty != "RSA" || k.Alg != "RS256" || k.Kid != "1" || k.N == "" || k.E == "" {
 		t.Errorf("JWKS key = %+v, want RSA/RS256/1 with non-empty n, e", k)
+	}
+
+	nBytes, err := base64.RawURLEncoding.DecodeString(k.N)
+	if err != nil {
+		t.Fatalf("decode n: %v", err)
+	}
+	eBytes, err := base64.RawURLEncoding.DecodeString(k.E)
+	if err != nil {
+		t.Fatalf("decode e: %v", err)
+	}
+	n := new(big.Int).SetBytes(nBytes)
+	e := new(big.Int).SetBytes(eBytes)
+	if n.Cmp(priv.N) != 0 {
+		t.Error("JWKS n does not match the issuer's actual public key modulus")
+	}
+	if e.Int64() != int64(priv.E) {
+		t.Errorf("JWKS e = %v, want %v", e.Int64(), priv.E)
 	}
 }

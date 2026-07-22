@@ -39,7 +39,7 @@ func (a *Account) Status() AccountStatus  { return a.status }
 func (a *Account) IsActive() bool         { return a.status == StatusActive }
 
 // Disable marks the account disabled — a disabled account can no longer
-// authenticate (see EnsureActive). Disabling an already-disabled account is
+// authenticate (see Login). Disabling an already-disabled account is
 // rejected as an illegal transition, not a silent no-op.
 func (a *Account) Disable() error {
 	if a.status == StatusDisabled {
@@ -62,10 +62,12 @@ func (a *Account) Activate() error {
 	return nil
 }
 
-// EnsureActive enforces the login-eligibility invariant: a disabled account
-// cannot authenticate. Callers check this instead of inspecting IsActive
-// themselves, so the rule lives on the aggregate, not the caller.
-func (a *Account) EnsureActive() error {
+// Login enforces the login-eligibility invariant: a disabled account cannot
+// authenticate. Callers check this instead of inspecting IsActive
+// themselves, so the rule lives on the aggregate, not the caller. Today
+// this only checks status; recording a last-login timestamp and
+// failed-attempt lockout are expected to land here as this grows.
+func (a *Account) Login() error {
 	if !a.IsActive() {
 		return ErrAccountDisabled
 	}
