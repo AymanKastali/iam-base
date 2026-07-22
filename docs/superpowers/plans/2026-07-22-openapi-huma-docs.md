@@ -29,7 +29,8 @@
 - Create: `internal/infra/httpapi/errors_test.go`
 
 **Interfaces:**
-- Produces: `mapAppError(action string, err error) error` — replaces `respondError`. Returns a `huma.StatusError` (which satisfies `error`) instead of writing directly to an `http.ResponseWriter`. Every later handler task calls this.
+- Produces: `mapAppError(action string, err error) error` — a new function alongside the existing `respondError`. Returns a `huma.StatusError` (which satisfies `error`) instead of writing directly to an `http.ResponseWriter`. Every Huma-converted handler task (3-7) calls this.
+- Keeps: `respondError(w http.ResponseWriter, action string, err error)` and the full `kindedError` interface (`Kind()` + `Code()`) **unchanged, still present** — handlers not yet converted (everything until Task 7 finishes) still call it, and it still depends on `writeError` in `response.go`. Task 8 removes `respondError` and trims `kindedError` down to just `Kind()` once no handler calls it anymore and `response.go` is deleted. Do NOT delete `respondError` in this task — doing so breaks the build, since Tasks 3-7 haven't converted their handlers yet.
 - Produces: `statusForKind(k app.Kind) int` — unchanged signature/behavior, kept as-is.
 
 - [ ] **Step 1: Add the dependency**
@@ -105,7 +106,7 @@ Expected: FAIL — `mapAppError` is undefined (compile error).
 
 - [ ] **Step 4: Replace `errors.go`**
 
-Replace the full contents of `internal/infra/httpapi/errors.go` with:
+Replace the full contents of `internal/infra/httpapi/errors.go` with (this **adds** `mapAppError` alongside the existing `respondError` — it does not remove anything; `respondError` still backs the not-yet-converted handlers until Task 8):
 
 ```go
 package httpapi
@@ -120,18 +121,33 @@ import (
 	"github.com/AymanKastali/iam-base/internal/app"
 )
 
-// kindedError is implemented by any app-layer error that carries a Kind (see
-// app.Error). Handlers never name individual errors — they just call
-// mapAppError.
+// kindedError is implemented by any app-layer error that carries a Kind and
+// a machine-readable Code (see app.Error). Handlers never name individual
+// errors — they just call respondError or mapAppError.
 type kindedError interface {
 	error
 	Kind() app.Kind
+	Code() string
+}
+
+// respondError classifies err via kindedError and writes the matching
+// response; anything that doesn't implement it is logged and returned as a
+// generic 500. Used by handlers not yet converted to Huma operations. Once
+// every handler calls mapAppError instead (Tasks 3-7 complete), Task 8
+// deletes this function together with response.go.
+func respondError(w http.ResponseWriter, action string, err error) {
+	if ke, ok := errors.AsType[kindedError](err); ok {
+		writeError(w, statusForKind(ke.Kind()), ke.Code(), ke.Error())
+		return
+	}
+	log.Printf("%s: unexpected error: %v", action, err)
+	writeError(w, http.StatusInternalServerError, "internal_error", "internal error")
 }
 
 // mapAppError classifies err via kindedError and returns the matching
 // huma.StatusError; anything that doesn't implement it is logged and mapped
-// to a generic 500. This is the single place that knows how app errors
-// become wire responses — handlers only decide when to call it.
+// to a generic 500. This is what every Huma-converted handler (Tasks 3-7)
+// calls instead of respondError.
 func mapAppError(action string, err error) error {
 	if ke, ok := errors.AsType[kindedError](err); ok {
 		return huma.NewError(statusForKind(ke.Kind()), ke.Error())
@@ -1179,6 +1195,7 @@ git commit -m "feat(httpapi): convert logout handler to a Huma operation"
 
 **Files:**
 - Modify: `internal/infra/httpapi/router.go`
+- Modify: `internal/infra/httpapi/errors.go`
 - Delete: `internal/infra/httpapi/response.go`
 - Create: `internal/infra/httpapi/router_test.go`
 
@@ -1373,15 +1390,68 @@ func NewRouter(register RegisterHandler, login LoginHandler, refresh RefreshHand
 }
 ```
 
-- [ ] **Step 4: Delete `response.go`**
+- [ ] **Step 4: Trim `errors.go` and delete `response.go`**
+
+By this point (Tasks 3–7 done), no handler calls `respondError` anymore — it and `response.go`'s `writeError`/`writeJSON`/`decodeJSON`/`errorResponse`/`errorBody` are now dead. Remove them together, since `respondError` depends on `writeError`.
+
+Replace the full contents of `internal/infra/httpapi/errors.go` (drops `respondError` and shrinks `kindedError` back down to just `Kind()`, since `mapAppError` never calls `Code()`):
+
+```go
+package httpapi
+
+import (
+	"errors"
+	"log"
+	"net/http"
+
+	"github.com/danielgtaylor/huma/v2"
+
+	"github.com/AymanKastali/iam-base/internal/app"
+)
+
+// kindedError is implemented by any app-layer error that carries a Kind (see
+// app.Error). Handlers never name individual errors — they just call
+// mapAppError.
+type kindedError interface {
+	error
+	Kind() app.Kind
+}
+
+// mapAppError classifies err via kindedError and returns the matching
+// huma.StatusError; anything that doesn't implement it is logged and mapped
+// to a generic 500. This is the single place that knows how app errors
+// become wire responses — handlers only decide when to call it.
+func mapAppError(action string, err error) error {
+	if ke, ok := errors.AsType[kindedError](err); ok {
+		return huma.NewError(statusForKind(ke.Kind()), ke.Error())
+	}
+	log.Printf("%s: unexpected error: %v", action, err)
+	return huma.NewError(http.StatusInternalServerError, "internal error")
+}
+
+func statusForKind(k app.Kind) int {
+	switch k {
+	case app.KindValidation:
+		return http.StatusUnprocessableEntity
+	case app.KindConflict:
+		return http.StatusConflict
+	case app.KindUnauthorized:
+		return http.StatusUnauthorized
+	case app.KindNotFound:
+		return http.StatusNotFound
+	default:
+		return http.StatusInternalServerError
+	}
+}
+```
 
 Run: `git rm internal/infra/httpapi/response.go`
-Expected: `decodeJSON`, `writeJSON`, `writeError`, `errorResponse`, `errorBody` are gone — nothing references them anymore after Tasks 3–7.
+Expected: `decodeJSON`, `writeJSON`, `writeError`, `errorResponse`, `errorBody` are gone — nothing references them anymore after this step.
 
 - [ ] **Step 5: Run the tests to verify they pass**
 
 Run: `go test ./internal/infra/httpapi/... -v`
-Expected: PASS — every test in the package, including all of Tasks 1–8's.
+Expected: PASS — every test in the package, including all of Tasks 1–8's. (Task 1's `errors_test.go` still passes unchanged — it only ever tested `mapAppError`, never `respondError`.)
 
 - [ ] **Step 6: Run the full test suite and static checks**
 
@@ -1400,7 +1470,7 @@ Expected: no findings.
 - [ ] **Step 7: Commit**
 
 ```bash
-git add internal/infra/httpapi/router.go internal/infra/httpapi/router_test.go
+git add internal/infra/httpapi/router.go internal/infra/httpapi/router_test.go internal/infra/httpapi/errors.go
 git rm internal/infra/httpapi/response.go
 git commit -m "feat(httpapi): wire a Huma-backed router exposing OpenAPI docs at /docs"
 ```
