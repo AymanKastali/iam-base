@@ -16,9 +16,10 @@ type loginRequest struct {
 }
 
 type loginResponse struct {
-	AccessToken string `json:"access_token"`
-	TokenType   string `json:"token_type"`
-	ExpiresAt   string `json:"expires_at"`
+	AccessToken  string `json:"access_token"`
+	TokenType    string `json:"token_type"`
+	ExpiresAt    string `json:"expires_at"`
+	RefreshToken string `json:"refresh_token"`
 }
 
 func (h LoginHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -35,8 +36,9 @@ func (h LoginHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, loginResponse{
-		AccessToken: result.AccessToken,
-		TokenType:   "Bearer",
-		ExpiresAt:   result.ExpiresAt.Format(http.TimeFormat),
+		AccessToken:  result.AccessToken,
+		TokenType:    "Bearer",
+		ExpiresAt:    result.ExpiresAt.Format(http.TimeFormat),
+		RefreshToken: result.RefreshToken,
 	})
 }

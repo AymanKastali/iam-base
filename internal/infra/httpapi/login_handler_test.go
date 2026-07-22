@@ -53,6 +53,9 @@ func TestLoginHandler_ServeHTTP_Success(t *testing.T) {
 	if resp["access_token"] != "signed-jwt" {
 		t.Errorf("access_token = %v, want signed-jwt", resp["access_token"])
 	}
+	if resp["refresh_token"] == "" || resp["refresh_token"] == nil {
+		t.Error("refresh_token missing from login response")
+	}
 }
 
 func TestLoginHandler_ServeHTTP_InvalidCredentials(t *testing.T) {
