@@ -127,3 +127,49 @@ func TestRefreshHandler_ServeHTTP_BodyTooLarge(t *testing.T) {
 		t.Fatalf("status = %d, want 400, body = %s", rec.Code, rec.Body.String())
 	}
 }
+
+func newRefreshInput(refreshToken string) *RefreshInput {
+	input := &RefreshInput{}
+	input.Body.RefreshToken = refreshToken
+	return input
+}
+
+func TestRefreshHandler_Handle_Success(t *testing.T) {
+	repo := newStubRefreshTokenRepo()
+	now := time.Now()
+	familyID, _ := domain.NewFamilyID("family-1")
+	accountID, _ := domain.NewAccountID("account-1")
+	family, _ := domain.IssueFamily(familyID, accountID, "hash:old-secret", now.Add(time.Hour))
+	_ = repo.Save(context.Background(), family)
+
+	newSecretValue := "new-secret"
+	h := RefreshHandler{Handler: command.RotateRefreshTokenHandler{
+		Repo: repo,
+		TokenGen: stubTokenGenerator{
+			nextSecret: newSecretValue,
+			nextHash:   "hash:" + newSecretValue,
+		},
+		Issuer:          stubIssuer{},
+		Clock:           stubClock{now: now},
+		RefreshTokenTTL: 24 * time.Hour,
+	}}
+
+	out, err := h.Handle(context.Background(), newRefreshInput("family-1.old-secret"))
+
+	if err != nil {
+		t.Fatalf("Handle() error = %v, want nil", err)
+	}
+	if out.Body.RefreshToken != "family-1.new-secret" {
+		t.Errorf("RefreshToken = %v, want family-1.new-secret", out.Body.RefreshToken)
+	}
+}
+
+func TestRefreshHandler_Handle_InvalidRefreshToken(t *testing.T) {
+	h := RefreshHandler{Handler: command.RotateRefreshTokenHandler{
+		Repo: newStubRefreshTokenRepo(), TokenGen: stubTokenGenerator{}, Issuer: stubIssuer{}, Clock: stubClock{now: time.Now()}, RefreshTokenTTL: time.Hour,
+	}}
+
+	_, err := h.Handle(context.Background(), newRefreshInput("unknown-family.secret"))
+
+	assertStatus(t, err, http.StatusUnauthorized)
+}
