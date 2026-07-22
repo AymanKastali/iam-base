@@ -1564,7 +1564,11 @@ func TestRSAIssuer_IssueAndVerify(t *testing.T) {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	issuer := NewRSAIssuer(priv, "1", 15*time.Minute, fixedClock{now: now})
 
-	token, expiresAt, err := issuer.Issue(context.Background(), domain.AccountID("acc-1"))
+	accountID, err := domain.NewAccountID("acc-1")
+	if err != nil {
+		t.Fatalf("NewAccountID: %v", err)
+	}
+	token, expiresAt, err := issuer.Issue(context.Background(), accountID)
 	if err != nil {
 		t.Fatalf("Issue() error = %v, want nil", err)
 	}
@@ -1676,7 +1680,7 @@ func (i *RSAIssuer) Issue(ctx context.Context, accountID domain.AccountID) (stri
 	expiresAt := now.Add(i.ttl)
 
 	claims := jwtlib.MapClaims{
-		"sub": string(accountID),
+		"sub": accountID.String(),
 		"iat": now.Unix(),
 		"exp": expiresAt.Unix(),
 	}
