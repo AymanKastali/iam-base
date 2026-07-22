@@ -1,3 +1,6 @@
+// Package command holds the identity module's write-side (CQRS command)
+// use cases: RegisterAccount and Login orchestrate the domain and its ports,
+// never touching persistence or infrastructure directly.
 package command
 
 import (
