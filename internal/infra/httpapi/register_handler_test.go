@@ -1,13 +1,9 @@
 package httpapi
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
-	"net/http/httptest"
-	"strings"
 	"testing"
 
 	"github.com/danielgtaylor/huma/v2"
@@ -58,97 +54,6 @@ func (stubIDGenerator) NewAccountID() (domain.AccountID, error) {
 
 func (stubIDGenerator) NewFamilyID() (domain.FamilyID, error) {
 	return domain.NewFamilyID("stub-family-id")
-}
-
-func TestRegisterHandler_ServeHTTP_Success(t *testing.T) {
-	repo := &stubAccountRepo{}
-	h := RegisterHandler{Handler: command.RegisterAccountHandler{Repo: repo, Hasher: stubHasher{}, Policy: domain.MinLengthPasswordPolicy{}, IDGen: stubIDGenerator{}}}
-
-	body, _ := json.Marshal(map[string]string{"email": "a@b.com", "password": sampleCredential})
-	req := httptest.NewRequest(http.MethodPost, "/v1/auth/register", bytes.NewReader(body))
-	rec := httptest.NewRecorder()
-
-	h.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("status = %d, want 201, body = %s", rec.Code, rec.Body.String())
-	}
-}
-
-func TestRegisterHandler_ServeHTTP_DuplicateEmail(t *testing.T) {
-	repo := &stubAccountRepo{saveErr: domain.ErrEmailAlreadyRegistered}
-	h := RegisterHandler{Handler: command.RegisterAccountHandler{Repo: repo, Hasher: stubHasher{}, Policy: domain.MinLengthPasswordPolicy{}, IDGen: stubIDGenerator{}}}
-
-	body, _ := json.Marshal(map[string]string{"email": "a@b.com", "password": sampleCredential})
-	req := httptest.NewRequest(http.MethodPost, "/v1/auth/register", bytes.NewReader(body))
-	rec := httptest.NewRecorder()
-
-	h.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusConflict {
-		t.Fatalf("status = %d, want 409", rec.Code)
-	}
-}
-
-func TestRegisterHandler_ServeHTTP_InvalidEmail(t *testing.T) {
-	repo := &stubAccountRepo{}
-	h := RegisterHandler{Handler: command.RegisterAccountHandler{Repo: repo, Hasher: stubHasher{}, Policy: domain.MinLengthPasswordPolicy{}, IDGen: stubIDGenerator{}}}
-
-	body, _ := json.Marshal(map[string]string{"email": "not-an-email", "password": sampleCredential})
-	req := httptest.NewRequest(http.MethodPost, "/v1/auth/register", bytes.NewReader(body))
-	rec := httptest.NewRecorder()
-
-	h.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("status = %d, want 422", rec.Code)
-	}
-}
-
-func TestRegisterHandler_ServeHTTP_PasswordTooShort(t *testing.T) {
-	repo := &stubAccountRepo{}
-	h := RegisterHandler{Handler: command.RegisterAccountHandler{Repo: repo, Hasher: stubHasher{}, Policy: domain.MinLengthPasswordPolicy{}, IDGen: stubIDGenerator{}}}
-
-	body, _ := json.Marshal(map[string]string{"email": "a@b.com", "password": "short"})
-	req := httptest.NewRequest(http.MethodPost, "/v1/auth/register", bytes.NewReader(body))
-	rec := httptest.NewRecorder()
-
-	h.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("status = %d, want 422, body = %s", rec.Code, rec.Body.String())
-	}
-}
-
-func TestRegisterHandler_ServeHTTP_BodyTooLarge(t *testing.T) {
-	repo := &stubAccountRepo{}
-	h := RegisterHandler{Handler: command.RegisterAccountHandler{Repo: repo, Hasher: stubHasher{}, Policy: domain.MinLengthPasswordPolicy{}, IDGen: stubIDGenerator{}}}
-
-	oversizedPassword := strings.Repeat("a", maxRequestBodyBytes)
-	body, _ := json.Marshal(map[string]string{"email": "a@b.com", "password": oversizedPassword})
-	req := httptest.NewRequest(http.MethodPost, "/v1/auth/register", bytes.NewReader(body))
-	rec := httptest.NewRecorder()
-
-	h.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400, body = %s", rec.Code, rec.Body.String())
-	}
-}
-
-func TestRegisterHandler_ServeHTTP_UnexpectedError(t *testing.T) {
-	repo := &stubAccountRepo{saveErr: errors.New("boom")}
-	h := RegisterHandler{Handler: command.RegisterAccountHandler{Repo: repo, Hasher: stubHasher{}, Policy: domain.MinLengthPasswordPolicy{}, IDGen: stubIDGenerator{}}}
-
-	body, _ := json.Marshal(map[string]string{"email": "a@b.com", "password": sampleCredential})
-	req := httptest.NewRequest(http.MethodPost, "/v1/auth/register", bytes.NewReader(body))
-	rec := httptest.NewRecorder()
-
-	h.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want 500", rec.Code)
-	}
 }
 
 func newRegisterInput(email, password string) *RegisterInput {

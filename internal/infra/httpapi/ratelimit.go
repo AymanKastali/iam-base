@@ -95,16 +95,3 @@ func (l *IPRateLimiter) HumaMiddleware(api huma.API) func(huma.Context, func(hum
 		next(ctx)
 	}
 }
-
-// Middleware is the pre-Huma http.Handler wrapper, still called directly by
-// router.go until Task 8 rewires the router onto HumaMiddleware. Kept
-// working, not just kept compiling — router.go depends on its behavior today.
-func (l *IPRateLimiter) Middleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !l.Allow(r.RemoteAddr) {
-			w.WriteHeader(http.StatusTooManyRequests)
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
-}
