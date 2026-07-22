@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/AymanKastali/iam-base/internal/identity/app/command"
@@ -89,6 +90,37 @@ func TestRegisterHandler_ServeHTTP_InvalidEmail(t *testing.T) {
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+}
+
+func TestRegisterHandler_ServeHTTP_PasswordTooShort(t *testing.T) {
+	repo := &stubAccountRepo{}
+	h := RegisterHandler{Handler: command.RegisterAccountHandler{Repo: repo, Hasher: stubHasher{}}}
+
+	body, _ := json.Marshal(map[string]string{"email": "a@b.com", "password": "short"})
+	req := httptest.NewRequest(http.MethodPost, "/v1/auth/register", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestRegisterHandler_ServeHTTP_BodyTooLarge(t *testing.T) {
+	repo := &stubAccountRepo{}
+	h := RegisterHandler{Handler: command.RegisterAccountHandler{Repo: repo, Hasher: stubHasher{}}}
+
+	oversizedPassword := strings.Repeat("a", maxRequestBodyBytes)
+	body, _ := json.Marshal(map[string]string{"email": "a@b.com", "password": oversizedPassword})
+	req := httptest.NewRequest(http.MethodPost, "/v1/auth/register", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body = %s", rec.Code, rec.Body.String())
 	}
 }
 

@@ -28,8 +28,12 @@ func main() {
 	defer app.Pool.Close()
 
 	server := &http.Server{
-		Addr:    ":" + cfg.Port,
-		Handler: app.Router,
+		Addr:              ":" + cfg.Port,
+		Handler:           app.Router,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       5 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
 
 	go func() {

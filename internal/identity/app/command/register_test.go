@@ -78,6 +78,15 @@ func TestRegisterAccountHandler_Handle_InvalidEmail(t *testing.T) {
 	}
 }
 
+func TestRegisterAccountHandler_Handle_PasswordTooShort(t *testing.T) {
+	h := RegisterAccountHandler{Repo: newFakeAccountRepo(), Hasher: fakeHasher{}}
+
+	_, err := h.Handle(context.Background(), RegisterAccountCommand{Email: "a@b.com", Password: "short"})
+	if !errors.Is(err, ErrPasswordTooShort) {
+		t.Fatalf("Handle() error = %v, want ErrPasswordTooShort", err)
+	}
+}
+
 func TestRegisterAccountHandler_Handle_DuplicateEmail(t *testing.T) {
 	repo := newFakeAccountRepo()
 	repo.saveErr = domain.ErrEmailAlreadyRegistered

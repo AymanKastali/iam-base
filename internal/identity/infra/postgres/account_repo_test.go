@@ -31,7 +31,7 @@ func newTestRepo(t *testing.T) *AccountRepository {
 	if err != nil {
 		t.Fatalf("connection string: %v", err)
 	}
-	if err := Migrate(dsn, "file://migrations"); err != nil {
+	if err := Migrate(dsn); err != nil {
 		t.Fatalf("Migrate: %v", err)
 	}
 

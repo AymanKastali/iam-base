@@ -85,3 +85,52 @@ func TestLoginHandler_Handle_UnknownEmail(t *testing.T) {
 		t.Fatalf("Handle() error = %v, want ErrInvalidCredentials (must not leak account existence)", err)
 	}
 }
+
+// spyHasher counts Hash() calls so tests can confirm the unknown-email and
+// disabled-account paths pay the same hashing cost as a real verification —
+// otherwise their faster response time would leak account existence/status.
+type spyHasher struct {
+	fakeHasher
+	hashCalls int
+}
+
+func (s *spyHasher) Hash(password string) (domain.Credential, error) {
+	s.hashCalls++
+	return s.fakeHasher.Hash(password)
+}
+
+func TestLoginHandler_Handle_UnknownEmail_PadsTimingCost(t *testing.T) {
+	repo := newFakeAccountRepo()
+	spy := &spyHasher{}
+	h := LoginHandler{Repo: repo, Hasher: spy, Issuer: fakeIssuer{}}
+
+	if _, err := h.Handle(context.Background(), LoginCommand{Email: "missing@b.com", Password: sampleCredential}); !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatalf("Handle() error = %v, want ErrInvalidCredentials", err)
+	}
+	if spy.hashCalls != 1 {
+		t.Errorf("Hasher.Hash() call count = %d, want 1 (timing-cost padding)", spy.hashCalls)
+	}
+}
+
+func TestLoginHandler_Handle_DisabledAccount_PadsTimingCost(t *testing.T) {
+	repo := newFakeAccountRepo()
+	registerFixture(t, repo, "a@b.com", sampleCredential)
+	email, _ := domain.NewEmail("a@b.com")
+	account, err := repo.FindByEmail(context.Background(), email)
+	if err != nil {
+		t.Fatalf("fixture FindByEmail: %v", err)
+	}
+	if err := account.Disable(); err != nil {
+		t.Fatalf("fixture Disable: %v", err)
+	}
+
+	spy := &spyHasher{}
+	h := LoginHandler{Repo: repo, Hasher: spy, Issuer: fakeIssuer{}}
+
+	if _, err := h.Handle(context.Background(), LoginCommand{Email: "a@b.com", Password: sampleCredential}); !errors.Is(err, domain.ErrAccountDisabled) {
+		t.Fatalf("Handle() error = %v, want ErrAccountDisabled", err)
+	}
+	if spy.hashCalls != 1 {
+		t.Errorf("Hasher.Hash() call count = %d, want 1 (timing-cost padding)", spy.hashCalls)
+	}
+}

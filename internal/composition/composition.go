@@ -20,8 +20,6 @@ import (
 	"github.com/AymanKastali/iam-base/internal/infra/config"
 )
 
-const migrationsSourceURL = "file://internal/identity/infra/postgres/migrations"
-
 type systemClock struct{}
 
 func (systemClock) Now() time.Time { return time.Now() }
@@ -36,7 +34,7 @@ type Application struct {
 // Build runs pending migrations and wires every dependency the identity
 // module needs, from the Postgres pool up through the HTTP router.
 func Build(ctx context.Context, cfg config.Config) (*Application, error) {
-	if err := postgres.Migrate(cfg.DatabaseURL, migrationsSourceURL); err != nil {
+	if err := postgres.Migrate(cfg.DatabaseURL); err != nil {
 		return nil, err
 	}
 

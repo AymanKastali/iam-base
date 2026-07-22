@@ -5,12 +5,17 @@ package command
 
 import (
 	"context"
+	"errors"
 
 	"github.com/google/uuid"
 
 	"github.com/AymanKastali/iam-base/internal/identity/app"
 	"github.com/AymanKastali/iam-base/internal/identity/domain"
 )
+
+const minPasswordLength = 8
+
+var ErrPasswordTooShort = errors.New("password must be at least 8 characters")
 
 type RegisterAccountCommand struct {
 	Email    string
@@ -26,6 +31,9 @@ func (h RegisterAccountHandler) Handle(ctx context.Context, cmd RegisterAccountC
 	email, err := domain.NewEmail(cmd.Email)
 	if err != nil {
 		return domain.AccountID{}, err
+	}
+	if len(cmd.Password) < minPasswordLength {
+		return domain.AccountID{}, ErrPasswordTooShort
 	}
 	credential, err := h.Hasher.Hash(cmd.Password)
 	if err != nil {

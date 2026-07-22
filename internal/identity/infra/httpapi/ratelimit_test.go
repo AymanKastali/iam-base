@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func TestIPRateLimiter_Middleware(t *testing.T) {
@@ -57,5 +58,27 @@ func TestIPRateLimiter_Middleware_IsolatesByIP(t *testing.T) {
 	handler.ServeHTTP(recB1, reqB)
 	if recB1.Code != http.StatusOK {
 		t.Fatalf("IP B first request status = %d, want 200 — must not be throttled by IP A's limiter", recB1.Code)
+	}
+}
+
+func TestIPRateLimiter_EvictStale(t *testing.T) {
+	limiter := NewIPRateLimiter(1, 1)
+	limiter.limiterFor("1.2.3.4")
+	limiter.limiterFor("5.6.7.8")
+
+	now := time.Now()
+	limiter.mu.Lock()
+	limiter.limiters["1.2.3.4"].lastSeen = now.Add(-2 * staleEntryTTL)
+	limiter.mu.Unlock()
+
+	limiter.evictStale(now)
+
+	limiter.mu.Lock()
+	defer limiter.mu.Unlock()
+	if _, ok := limiter.limiters["1.2.3.4"]; ok {
+		t.Error("evictStale() did not remove the stale entry for 1.2.3.4")
+	}
+	if _, ok := limiter.limiters["5.6.7.8"]; !ok {
+		t.Error("evictStale() incorrectly removed the fresh entry for 5.6.7.8")
 	}
 }

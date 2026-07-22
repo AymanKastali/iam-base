@@ -9,7 +9,6 @@ RUN CGO_ENABLED=0 go build -o /out/server ./cmd/server
 FROM alpine:3.20
 RUN adduser -D -H iam
 COPY --from=builder /out/server /usr/local/bin/server
-COPY --from=builder /src/internal/identity/infra/postgres/migrations /internal/identity/infra/postgres/migrations
 USER iam
 EXPOSE 8080
 ENTRYPOINT ["/usr/local/bin/server"]

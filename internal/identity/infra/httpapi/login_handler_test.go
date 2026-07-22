@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -57,6 +58,22 @@ func TestLoginHandler_ServeHTTP_InvalidCredentials(t *testing.T) {
 
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401", rec.Code)
+	}
+}
+
+func TestLoginHandler_ServeHTTP_BodyTooLarge(t *testing.T) {
+	repo := &stubAccountRepo{}
+	h := LoginHandler{Handler: command.LoginHandler{Repo: repo, Hasher: stubHasher{}, Issuer: stubIssuer{}}}
+
+	oversizedPassword := strings.Repeat("a", maxRequestBodyBytes)
+	body, _ := json.Marshal(map[string]string{"email": "a@b.com", "password": oversizedPassword})
+	req := httptest.NewRequest(http.MethodPost, "/v1/auth/login", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body = %s", rec.Code, rec.Body.String())
 	}
 }
 

@@ -34,9 +34,11 @@ func (h LoginHandler) Handle(ctx context.Context, cmd LoginCommand) (LoginResult
 	}
 	account, err := h.Repo.FindByEmail(ctx, email)
 	if err != nil {
+		h.padTimingCost(cmd.Password)
 		return LoginResult{}, ErrInvalidCredentials
 	}
 	if err := account.Login(); err != nil {
+		h.padTimingCost(cmd.Password)
 		return LoginResult{}, err
 	}
 	ok, err := h.Hasher.Verify(account.Credential(), cmd.Password)
@@ -51,4 +53,12 @@ func (h LoginHandler) Handle(ctx context.Context, cmd LoginCommand) (LoginResult
 		return LoginResult{}, err
 	}
 	return LoginResult{AccessToken: token, ExpiresAt: expiresAt}, nil
+}
+
+// padTimingCost runs a throwaway password hash so the unknown-email and
+// disabled-account paths cost roughly the same as a real credential
+// verification — otherwise their faster response time would leak account
+// existence/status to an attacker even though the returned error doesn't.
+func (h LoginHandler) padTimingCost(password string) {
+	_, _ = h.Hasher.Hash(password)
 }
