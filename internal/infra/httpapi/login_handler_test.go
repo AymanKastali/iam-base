@@ -27,7 +27,16 @@ func TestLoginHandler_ServeHTTP_Success(t *testing.T) {
 		t.Fatalf("fixture register: %v", err)
 	}
 
-	h := LoginHandler{Handler: command.LoginHandler{Repo: repo, Hasher: stubHasher{}, Issuer: stubIssuer{}}}
+	h := LoginHandler{Handler: command.LoginHandler{
+		Repo:            repo,
+		Hasher:          stubHasher{},
+		Issuer:          stubIssuer{},
+		RefreshRepo:     newStubRefreshTokenRepo(),
+		TokenGen:        stubTokenGenerator{nextSecret: "s", nextHash: "h"},
+		IDGen:           stubIDGenerator{},
+		Clock:           stubClock{now: time.Now()},
+		RefreshTokenTTL: 24 * time.Hour,
+	}}
 	body, _ := json.Marshal(map[string]string{"email": "a@b.com", "password": sampleCredential})
 	req := httptest.NewRequest(http.MethodPost, "/v1/auth/login", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
@@ -44,11 +53,23 @@ func TestLoginHandler_ServeHTTP_Success(t *testing.T) {
 	if resp["access_token"] != "signed-jwt" {
 		t.Errorf("access_token = %v, want signed-jwt", resp["access_token"])
 	}
+	if resp["refresh_token"] == "" || resp["refresh_token"] == nil {
+		t.Error("refresh_token missing from login response")
+	}
 }
 
 func TestLoginHandler_ServeHTTP_InvalidCredentials(t *testing.T) {
 	repo := &stubAccountRepo{}
-	h := LoginHandler{Handler: command.LoginHandler{Repo: repo, Hasher: stubHasher{}, Issuer: stubIssuer{}}}
+	h := LoginHandler{Handler: command.LoginHandler{
+		Repo:            repo,
+		Hasher:          stubHasher{},
+		Issuer:          stubIssuer{},
+		RefreshRepo:     newStubRefreshTokenRepo(),
+		TokenGen:        stubTokenGenerator{nextSecret: "s", nextHash: "h"},
+		IDGen:           stubIDGenerator{},
+		Clock:           stubClock{now: time.Now()},
+		RefreshTokenTTL: 24 * time.Hour,
+	}}
 
 	body, _ := json.Marshal(map[string]string{"email": "missing@b.com", "password": sampleCredential})
 	req := httptest.NewRequest(http.MethodPost, "/v1/auth/login", bytes.NewReader(body))
@@ -63,7 +84,16 @@ func TestLoginHandler_ServeHTTP_InvalidCredentials(t *testing.T) {
 
 func TestLoginHandler_ServeHTTP_BodyTooLarge(t *testing.T) {
 	repo := &stubAccountRepo{}
-	h := LoginHandler{Handler: command.LoginHandler{Repo: repo, Hasher: stubHasher{}, Issuer: stubIssuer{}}}
+	h := LoginHandler{Handler: command.LoginHandler{
+		Repo:            repo,
+		Hasher:          stubHasher{},
+		Issuer:          stubIssuer{},
+		RefreshRepo:     newStubRefreshTokenRepo(),
+		TokenGen:        stubTokenGenerator{nextSecret: "s", nextHash: "h"},
+		IDGen:           stubIDGenerator{},
+		Clock:           stubClock{now: time.Now()},
+		RefreshTokenTTL: 24 * time.Hour,
+	}}
 
 	oversizedPassword := strings.Repeat("a", maxRequestBodyBytes)
 	body, _ := json.Marshal(map[string]string{"email": "a@b.com", "password": oversizedPassword})
@@ -87,7 +117,16 @@ func TestLoginHandler_ServeHTTP_DisabledAccount(t *testing.T) {
 		t.Fatalf("fixture Disable: %v", err)
 	}
 
-	h := LoginHandler{Handler: command.LoginHandler{Repo: repo, Hasher: stubHasher{}, Issuer: stubIssuer{}}}
+	h := LoginHandler{Handler: command.LoginHandler{
+		Repo:            repo,
+		Hasher:          stubHasher{},
+		Issuer:          stubIssuer{},
+		RefreshRepo:     newStubRefreshTokenRepo(),
+		TokenGen:        stubTokenGenerator{nextSecret: "s", nextHash: "h"},
+		IDGen:           stubIDGenerator{},
+		Clock:           stubClock{now: time.Now()},
+		RefreshTokenTTL: 24 * time.Hour,
+	}}
 	body, _ := json.Marshal(map[string]string{"email": "a@b.com", "password": sampleCredential})
 	req := httptest.NewRequest(http.MethodPost, "/v1/auth/login", bytes.NewReader(body))
 	rec := httptest.NewRecorder()

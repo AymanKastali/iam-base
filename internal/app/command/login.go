@@ -19,14 +19,20 @@ type LoginCommand struct {
 }
 
 type LoginResult struct {
-	AccessToken string
-	ExpiresAt   time.Time
+	AccessToken  string
+	ExpiresAt    time.Time
+	RefreshToken string
 }
 
 type LoginHandler struct {
-	Repo   domain.AccountRepository
-	Hasher app.PasswordHasher
-	Issuer app.TokenIssuer
+	Repo            domain.AccountRepository
+	Hasher          app.PasswordHasher
+	Issuer          app.TokenIssuer
+	RefreshRepo     domain.RefreshTokenRepository
+	TokenGen        app.RefreshTokenGenerator
+	IDGen           app.IDGenerator
+	Clock           app.Clock
+	RefreshTokenTTL time.Duration
 }
 
 func (h LoginHandler) Handle(ctx context.Context, cmd LoginCommand) (LoginResult, error) {
@@ -53,11 +59,41 @@ func (h LoginHandler) Handle(ctx context.Context, cmd LoginCommand) (LoginResult
 	if !ok {
 		return LoginResult{}, ErrInvalidCredentials
 	}
+
 	token, expiresAt, err := h.Issuer.Issue(ctx, account.ID())
 	if err != nil {
 		return LoginResult{}, err
 	}
-	return LoginResult{AccessToken: token, ExpiresAt: expiresAt}, nil
+
+	// Login reads one Account above and, here, separately saves one new
+	// RefreshTokenFamily — two independent saves, never one transaction
+	// (design doc §7: no cross-aggregate transactions).
+	refreshToken, err := h.issueRefreshFamily(ctx, account.ID())
+	if err != nil {
+		return LoginResult{}, err
+	}
+
+	return LoginResult{AccessToken: token, ExpiresAt: expiresAt, RefreshToken: refreshToken}, nil
+}
+
+func (h LoginHandler) issueRefreshFamily(ctx context.Context, accountID domain.AccountID) (string, error) {
+	familyID, err := h.IDGen.NewFamilyID()
+	if err != nil {
+		return "", err
+	}
+	secret, hash, err := h.TokenGen.Generate()
+	if err != nil {
+		return "", err
+	}
+	expiresAt := h.Clock.Now().Add(h.RefreshTokenTTL)
+	family, err := domain.IssueFamily(familyID, accountID, hash, expiresAt)
+	if err != nil {
+		return "", err
+	}
+	if err := h.RefreshRepo.Save(ctx, family); err != nil {
+		return "", err
+	}
+	return formatRefreshToken(familyID, secret), nil
 }
 
 // padTimingCost runs a throwaway password hash so the unknown-email and

@@ -43,6 +43,12 @@ func (e *Error) Unwrap() error { return e.cause }
 // existence or status.
 var ErrInvalidCredentials = NewError(KindUnauthorized, "invalid_credentials", errors.New("invalid credentials"))
 
+// ErrInvalidRefreshToken is returned by RotateRefreshTokenHandler for any
+// refresh failure that must be indistinguishable from any other (unknown
+// family, expired, malformed, reused token) so the response never leaks
+// which reason it was.
+var ErrInvalidRefreshToken = NewError(KindUnauthorized, "invalid_refresh_token", errors.New("invalid refresh token"))
+
 // Classify translates a raw domain error into a categorized *Error, so
 // command handlers never need to know the HTTP-facing shape of their own
 // errors — they just defer a Classify call once, at the top of Handle. Any

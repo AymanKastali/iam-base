@@ -21,10 +21,10 @@ func Register(id AccountID, email Email, credential Credential) (*Account, error
 	return account, nil
 }
 
-// Reconstitute rebuilds an Account already known to exist — loaded from
-// storage, not newly created — so, unlike Register, it does not raise
+// ReconstituteAccount rebuilds an Account already known to exist — loaded
+// from storage, not newly created — so, unlike Register, it does not raise
 // AccountRegistered. The repository adapter is the only expected caller.
-func Reconstitute(id AccountID, email Email, credential Credential, status AccountStatus) *Account {
+func ReconstituteAccount(id AccountID, email Email, credential Credential, status AccountStatus) *Account {
 	return &Account{
 		AggregateRoot: NewAggregateRoot(id),
 		email:         email,

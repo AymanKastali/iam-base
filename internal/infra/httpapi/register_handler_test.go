@@ -54,6 +54,10 @@ func (stubIDGenerator) NewAccountID() (domain.AccountID, error) {
 	return domain.NewAccountID("stub-account-id")
 }
 
+func (stubIDGenerator) NewFamilyID() (domain.FamilyID, error) {
+	return domain.NewFamilyID("stub-family-id")
+}
+
 func TestRegisterHandler_ServeHTTP_Success(t *testing.T) {
 	repo := &stubAccountRepo{}
 	h := RegisterHandler{Handler: command.RegisterAccountHandler{Repo: repo, Hasher: stubHasher{}, Policy: domain.MinLengthPasswordPolicy{}, IDGen: stubIDGenerator{}}}

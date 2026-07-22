@@ -78,5 +78,5 @@ func (r *AccountRepository) FindByEmail(ctx context.Context, email domain.Email)
 	if err != nil {
 		return nil, err
 	}
-	return domain.Reconstitute(accountID, e, cred, accountStatus), nil
+	return domain.ReconstituteAccount(accountID, e, cred, accountStatus), nil
 }

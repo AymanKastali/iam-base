@@ -35,7 +35,17 @@ func TestLoginHandler_Handle_Success(t *testing.T) {
 	repo := newFakeAccountRepo()
 	registerFixture(t, repo, "a@b.com", sampleCredential)
 	expiresAt := time.Now().Add(15 * time.Minute)
-	h := LoginHandler{Repo: repo, Hasher: fakeHasher{}, Issuer: fakeIssuer{token: "signed-jwt", expiresAt: expiresAt}}
+	refreshRepo := newFakeRefreshTokenRepo()
+	h := LoginHandler{
+		Repo:            repo,
+		Hasher:          fakeHasher{},
+		Issuer:          fakeIssuer{token: "signed-jwt", expiresAt: expiresAt},
+		RefreshRepo:     refreshRepo,
+		TokenGen:        fakeTokenGenerator{nextSecret: "rawsec1", nextHash: "hash-1"},
+		IDGen:           fakeIDGenerator{},
+		Clock:           fakeClock{now: time.Now()},
+		RefreshTokenTTL: 24 * time.Hour,
+	}
 
 	result, err := h.Handle(context.Background(), LoginCommand{Email: "a@b.com", Password: sampleCredential})
 	if err != nil {
@@ -43,6 +53,13 @@ func TestLoginHandler_Handle_Success(t *testing.T) {
 	}
 	if result.AccessToken != "signed-jwt" || !result.ExpiresAt.Equal(expiresAt) {
 		t.Errorf("Handle() = %+v, want token=signed-jwt expiresAt=%v", result, expiresAt)
+	}
+	wantRefreshToken := "fake-family-id.rawsec1" // fakeIDGenerator.NewFamilyID() returns "fake-family-id"
+	if result.RefreshToken != wantRefreshToken {
+		t.Errorf("Handle() RefreshToken = %q, want %q", result.RefreshToken, wantRefreshToken)
+	}
+	if len(refreshRepo.families) != 1 {
+		t.Errorf("RefreshRepo has %d families, want 1", len(refreshRepo.families))
 	}
 }
 
@@ -57,7 +74,11 @@ func TestLoginHandler_Handle_DisabledAccount(t *testing.T) {
 	if err := account.Disable(); err != nil {
 		t.Fatalf("fixture Disable: %v", err)
 	}
-	h := LoginHandler{Repo: repo, Hasher: fakeHasher{}, Issuer: fakeIssuer{}}
+	h := LoginHandler{
+		Repo: repo, Hasher: fakeHasher{}, Issuer: fakeIssuer{},
+		RefreshRepo: newFakeRefreshTokenRepo(), TokenGen: fakeTokenGenerator{nextSecret: "s", nextHash: "h"},
+		IDGen: fakeIDGenerator{}, Clock: fakeClock{now: time.Now()}, RefreshTokenTTL: 24 * time.Hour,
+	}
 
 	_, err = h.Handle(context.Background(), LoginCommand{Email: "a@b.com", Password: sampleCredential})
 	if !errors.Is(err, ErrInvalidCredentials) {
@@ -68,7 +89,11 @@ func TestLoginHandler_Handle_DisabledAccount(t *testing.T) {
 func TestLoginHandler_Handle_WrongPassword(t *testing.T) {
 	repo := newFakeAccountRepo()
 	registerFixture(t, repo, "a@b.com", sampleCredential)
-	h := LoginHandler{Repo: repo, Hasher: fakeHasher{}, Issuer: fakeIssuer{}}
+	h := LoginHandler{
+		Repo: repo, Hasher: fakeHasher{}, Issuer: fakeIssuer{},
+		RefreshRepo: newFakeRefreshTokenRepo(), TokenGen: fakeTokenGenerator{nextSecret: "s", nextHash: "h"},
+		IDGen: fakeIDGenerator{}, Clock: fakeClock{now: time.Now()}, RefreshTokenTTL: 24 * time.Hour,
+	}
 
 	_, err := h.Handle(context.Background(), LoginCommand{Email: "a@b.com", Password: "wrong"})
 	if !errors.Is(err, ErrInvalidCredentials) {
@@ -79,7 +104,11 @@ func TestLoginHandler_Handle_WrongPassword(t *testing.T) {
 func TestLoginHandler_Handle_RepositoryFailure_Propagates(t *testing.T) {
 	repoErr := errors.New("connection refused")
 	repo := &fakeAccountRepo{lookupErr: repoErr}
-	h := LoginHandler{Repo: repo, Hasher: fakeHasher{}, Issuer: fakeIssuer{}}
+	h := LoginHandler{
+		Repo: repo, Hasher: fakeHasher{}, Issuer: fakeIssuer{},
+		RefreshRepo: newFakeRefreshTokenRepo(), TokenGen: fakeTokenGenerator{nextSecret: "s", nextHash: "h"},
+		IDGen: fakeIDGenerator{}, Clock: fakeClock{now: time.Now()}, RefreshTokenTTL: 24 * time.Hour,
+	}
 
 	_, err := h.Handle(context.Background(), LoginCommand{Email: "a@b.com", Password: sampleCredential})
 	if !errors.Is(err, repoErr) {
@@ -87,9 +116,31 @@ func TestLoginHandler_Handle_RepositoryFailure_Propagates(t *testing.T) {
 	}
 }
 
+func TestLoginHandler_Handle_RefreshRepoSaveFailure_Propagates(t *testing.T) {
+	repo := newFakeAccountRepo()
+	registerFixture(t, repo, "a@b.com", sampleCredential)
+	repoErr := errors.New("connection refused")
+	refreshRepo := newFakeRefreshTokenRepo()
+	refreshRepo.saveErr = repoErr
+	h := LoginHandler{
+		Repo: repo, Hasher: fakeHasher{}, Issuer: fakeIssuer{},
+		RefreshRepo: refreshRepo, TokenGen: fakeTokenGenerator{nextSecret: "s", nextHash: "h"},
+		IDGen: fakeIDGenerator{}, Clock: fakeClock{now: time.Now()}, RefreshTokenTTL: 24 * time.Hour,
+	}
+
+	_, err := h.Handle(context.Background(), LoginCommand{Email: "a@b.com", Password: sampleCredential})
+	if !errors.Is(err, repoErr) {
+		t.Fatalf("Handle() error = %v, want repository error to propagate (not be masked as ErrInvalidCredentials — credentials already verified)", err)
+	}
+}
+
 func TestLoginHandler_Handle_UnknownEmail(t *testing.T) {
 	repo := newFakeAccountRepo()
-	h := LoginHandler{Repo: repo, Hasher: fakeHasher{}, Issuer: fakeIssuer{}}
+	h := LoginHandler{
+		Repo: repo, Hasher: fakeHasher{}, Issuer: fakeIssuer{},
+		RefreshRepo: newFakeRefreshTokenRepo(), TokenGen: fakeTokenGenerator{nextSecret: "s", nextHash: "h"},
+		IDGen: fakeIDGenerator{}, Clock: fakeClock{now: time.Now()}, RefreshTokenTTL: 24 * time.Hour,
+	}
 
 	_, err := h.Handle(context.Background(), LoginCommand{Email: "missing@b.com", Password: sampleCredential})
 	if !errors.Is(err, ErrInvalidCredentials) {
@@ -113,7 +164,11 @@ func (s *spyHasher) Hash(password string) (domain.Credential, error) {
 func TestLoginHandler_Handle_UnknownEmail_PadsTimingCost(t *testing.T) {
 	repo := newFakeAccountRepo()
 	spy := &spyHasher{}
-	h := LoginHandler{Repo: repo, Hasher: spy, Issuer: fakeIssuer{}}
+	h := LoginHandler{
+		Repo: repo, Hasher: spy, Issuer: fakeIssuer{},
+		RefreshRepo: newFakeRefreshTokenRepo(), TokenGen: fakeTokenGenerator{nextSecret: "s", nextHash: "h"},
+		IDGen: fakeIDGenerator{}, Clock: fakeClock{now: time.Now()}, RefreshTokenTTL: 24 * time.Hour,
+	}
 
 	if _, err := h.Handle(context.Background(), LoginCommand{Email: "missing@b.com", Password: sampleCredential}); !errors.Is(err, ErrInvalidCredentials) {
 		t.Fatalf("Handle() error = %v, want ErrInvalidCredentials", err)
@@ -136,7 +191,11 @@ func TestLoginHandler_Handle_DisabledAccount_PadsTimingCost(t *testing.T) {
 	}
 
 	spy := &spyHasher{}
-	h := LoginHandler{Repo: repo, Hasher: spy, Issuer: fakeIssuer{}}
+	h := LoginHandler{
+		Repo: repo, Hasher: spy, Issuer: fakeIssuer{},
+		RefreshRepo: newFakeRefreshTokenRepo(), TokenGen: fakeTokenGenerator{nextSecret: "s", nextHash: "h"},
+		IDGen: fakeIDGenerator{}, Clock: fakeClock{now: time.Now()}, RefreshTokenTTL: 24 * time.Hour,
+	}
 
 	if _, err := h.Handle(context.Background(), LoginCommand{Email: "a@b.com", Password: sampleCredential}); !errors.Is(err, ErrInvalidCredentials) {
 		t.Fatalf("Handle() error = %v, want ErrInvalidCredentials (a disabled account must not be distinguishable from a wrong password)", err)
