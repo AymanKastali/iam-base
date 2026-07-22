@@ -38,33 +38,16 @@ func normalizeEmail(raw string) (string, error) {
 	return strings.ToLower(trimmed), nil
 }
 
-// validateEmailFormat checks for proper email structure: user@domain.tld
+// validateEmailFormat checks for proper email structure: user@domain.tld —
+// a non-empty local part, a single @, and a domain containing a dot.
 func validateEmailFormat(email string) error {
 	at := strings.IndexByte(email, '@')
-	if !hasValidLocalPart(email, at) {
+	if at <= 0 || at >= len(email)-1 {
 		return ErrInvalidEmail
 	}
-	if !hasValidDomain(email, at) {
+	domainPart := email[at+1:]
+	if strings.Contains(domainPart, "@") || !strings.Contains(domainPart, ".") {
 		return ErrInvalidEmail
 	}
 	return nil
-}
-
-// hasValidLocalPart checks the part before @.
-func hasValidLocalPart(email string, atIdx int) bool {
-	return atIdx > 0
-}
-
-// hasValidDomain checks the part after @ has at least one dot.
-func hasValidDomain(email string, atIdx int) bool {
-	if atIdx == -1 || atIdx >= len(email)-1 {
-		return false
-	}
-	domainPart := email[atIdx+1:]
-	// Check for multiple @ symbols in domain part
-	if strings.ContainsAny(domainPart, "@") {
-		return false
-	}
-	// Domain must contain at least one dot
-	return strings.Contains(domainPart, ".")
 }

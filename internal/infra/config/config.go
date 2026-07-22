@@ -22,14 +22,14 @@ type Config struct {
 
 func Load() (Config, error) {
 	cfg := Config{
-		Port:           getEnv("PORT", "8080"),
-		DatabaseURL:    os.Getenv("DATABASE_URL"),
-		JWTKeyID:       getEnv("JWT_KEY_ID", "1"),
-		AccessTokenTTL: 15 * time.Minute,
-		RateLimitRPS:   5,
-		RateLimitBurst: 10,
+		Port:              getEnv("PORT", "8080"),
+		DatabaseURL:       os.Getenv("DATABASE_URL"),
+		JWTPrivateKeyPath: os.Getenv("JWT_PRIVATE_KEY_PATH"),
+		JWTKeyID:          getEnv("JWT_KEY_ID", "1"),
+		AccessTokenTTL:    15 * time.Minute,
+		RateLimitRPS:      5,
+		RateLimitBurst:    10,
 	}
-	cfg.JWTPrivateKeyPath = os.Getenv("JWT_PRIVATE_KEY_PATH")
 
 	if ttl := os.Getenv("ACCESS_TOKEN_TTL"); ttl != "" {
 		d, err := time.ParseDuration(ttl)
