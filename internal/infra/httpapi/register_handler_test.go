@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/danielgtaylor/huma/v2"
+
 	"github.com/AymanKastali/iam-base/internal/app/command"
 	"github.com/AymanKastali/iam-base/internal/domain"
 )
@@ -146,5 +148,78 @@ func TestRegisterHandler_ServeHTTP_UnexpectedError(t *testing.T) {
 
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want 500", rec.Code)
+	}
+}
+
+func newRegisterInput(email, password string) *RegisterInput {
+	input := &RegisterInput{}
+	input.Body.Email = email
+	input.Body.Password = password
+	return input
+}
+
+func TestRegisterHandler_Handle_Success(t *testing.T) {
+	repo := &stubAccountRepo{}
+	h := RegisterHandler{Handler: command.RegisterAccountHandler{Repo: repo, Hasher: stubHasher{}, Policy: domain.MinLengthPasswordPolicy{}, IDGen: stubIDGenerator{}}}
+
+	out, err := h.Handle(context.Background(), newRegisterInput("a@b.com", sampleCredential))
+
+	if err != nil {
+		t.Fatalf("Handle() error = %v, want nil", err)
+	}
+	if out.Body.ID == "" {
+		t.Error("Body.ID is empty, want the new account's ID")
+	}
+}
+
+func TestRegisterHandler_Handle_DuplicateEmail(t *testing.T) {
+	repo := &stubAccountRepo{saveErr: domain.ErrEmailAlreadyRegistered}
+	h := RegisterHandler{Handler: command.RegisterAccountHandler{Repo: repo, Hasher: stubHasher{}, Policy: domain.MinLengthPasswordPolicy{}, IDGen: stubIDGenerator{}}}
+
+	_, err := h.Handle(context.Background(), newRegisterInput("a@b.com", sampleCredential))
+
+	assertStatus(t, err, http.StatusConflict)
+}
+
+func TestRegisterHandler_Handle_InvalidEmail(t *testing.T) {
+	repo := &stubAccountRepo{}
+	h := RegisterHandler{Handler: command.RegisterAccountHandler{Repo: repo, Hasher: stubHasher{}, Policy: domain.MinLengthPasswordPolicy{}, IDGen: stubIDGenerator{}}}
+
+	_, err := h.Handle(context.Background(), newRegisterInput("not-an-email", sampleCredential))
+
+	assertStatus(t, err, http.StatusUnprocessableEntity)
+}
+
+func TestRegisterHandler_Handle_PasswordTooShort(t *testing.T) {
+	repo := &stubAccountRepo{}
+	h := RegisterHandler{Handler: command.RegisterAccountHandler{Repo: repo, Hasher: stubHasher{}, Policy: domain.MinLengthPasswordPolicy{}, IDGen: stubIDGenerator{}}}
+
+	_, err := h.Handle(context.Background(), newRegisterInput("a@b.com", "short"))
+
+	assertStatus(t, err, http.StatusUnprocessableEntity)
+}
+
+func TestRegisterHandler_Handle_UnexpectedError(t *testing.T) {
+	repo := &stubAccountRepo{saveErr: errors.New("boom")}
+	h := RegisterHandler{Handler: command.RegisterAccountHandler{Repo: repo, Hasher: stubHasher{}, Policy: domain.MinLengthPasswordPolicy{}, IDGen: stubIDGenerator{}}}
+
+	_, err := h.Handle(context.Background(), newRegisterInput("a@b.com", sampleCredential))
+
+	assertStatus(t, err, http.StatusInternalServerError)
+}
+
+// assertStatus fails the test unless err is a huma.StatusError with the
+// given status. Shared by every converted handler's test file.
+func assertStatus(t *testing.T, err error, want int) {
+	t.Helper()
+	if err == nil {
+		t.Fatal("error = nil, want a huma.StatusError")
+	}
+	statusErr, ok := err.(huma.StatusError)
+	if !ok {
+		t.Fatalf("error = %v (%T), want a huma.StatusError", err, err)
+	}
+	if statusErr.GetStatus() != want {
+		t.Errorf("status = %d, want %d", statusErr.GetStatus(), want)
 	}
 }
