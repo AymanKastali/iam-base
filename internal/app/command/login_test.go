@@ -116,6 +116,24 @@ func TestLoginHandler_Handle_RepositoryFailure_Propagates(t *testing.T) {
 	}
 }
 
+func TestLoginHandler_Handle_RefreshRepoSaveFailure_Propagates(t *testing.T) {
+	repo := newFakeAccountRepo()
+	registerFixture(t, repo, "a@b.com", sampleCredential)
+	repoErr := errors.New("connection refused")
+	refreshRepo := newFakeRefreshTokenRepo()
+	refreshRepo.saveErr = repoErr
+	h := LoginHandler{
+		Repo: repo, Hasher: fakeHasher{}, Issuer: fakeIssuer{},
+		RefreshRepo: refreshRepo, TokenGen: fakeTokenGenerator{nextSecret: "s", nextHash: "h"},
+		IDGen: fakeIDGenerator{}, Clock: fakeClock{now: time.Now()}, RefreshTokenTTL: 24 * time.Hour,
+	}
+
+	_, err := h.Handle(context.Background(), LoginCommand{Email: "a@b.com", Password: sampleCredential})
+	if !errors.Is(err, repoErr) {
+		t.Fatalf("Handle() error = %v, want repository error to propagate (not be masked as ErrInvalidCredentials — credentials already verified)", err)
+	}
+}
+
 func TestLoginHandler_Handle_UnknownEmail(t *testing.T) {
 	repo := newFakeAccountRepo()
 	h := LoginHandler{

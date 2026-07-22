@@ -3,6 +3,7 @@ package command
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -64,5 +65,18 @@ func TestRevokeSessionHandler_Handle_RepositoryFailure_Propagates(t *testing.T) 
 
 	if err := h.Handle(context.Background(), RevokeSessionCommand{RefreshToken: familyID.String() + ".secret"}); err == nil {
 		t.Error("Handle() must propagate a genuine repository save failure, not swallow it")
+	}
+}
+
+func TestRevokeSessionHandler_Handle_FindByIDFailure_Propagates(t *testing.T) {
+	repoErr := errors.New("connection refused")
+	repo := newFakeRefreshTokenRepo()
+	familyID := issueTestFamily(t, repo, "hash:secret", time.Now().Add(time.Hour))
+	repo.findErr = repoErr
+	h := RevokeSessionHandler{Repo: repo}
+
+	err := h.Handle(context.Background(), RevokeSessionCommand{RefreshToken: familyID.String() + ".secret"})
+	if !errors.Is(err, repoErr) {
+		t.Fatalf("Handle() error = %v, want repository error to propagate (not be swallowed as nil like the not-found case)", err)
 	}
 }

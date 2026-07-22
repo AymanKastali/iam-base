@@ -123,6 +123,40 @@ func TestRefreshTokenFamily_Rotate_AlreadyRevoked_ReportsReuse(t *testing.T) {
 	}
 }
 
+func TestRefreshTokenFamily_Rotate_AlreadyRevoked_RecordsNoEvent(t *testing.T) {
+	family := newTestFamily(t)
+	if err := family.Revoke(); err != nil {
+		t.Fatalf("fixture Revoke: %v", err)
+	}
+	family.DrainEvents()
+	now := time.Now()
+
+	if err := family.Rotate(now, "hash-gen-1", "hash-gen-2", now.Add(24*time.Hour)); !errors.Is(err, ErrTokenReuseDetected) {
+		t.Fatalf("Rotate() on an already-revoked family error = %v, want ErrTokenReuseDetected", err)
+	}
+	if events := family.RecordedEvents(); len(events) != 0 {
+		t.Errorf("RecordedEvents() = %d events, want 0 — the already-revoked early return must not record a second RefreshTokenFamilyRevoked event", len(events))
+	}
+}
+
+func TestRefreshTokenFamily_Rotate_RevokedAndExpired_RevokedWins(t *testing.T) {
+	id, _ := NewFamilyID("11111111-1111-1111-1111-111111111111")
+	accountID, _ := NewAccountID("22222222-2222-2222-2222-222222222222")
+	family, err := IssueFamily(id, accountID, "hash-gen-1", time.Now().Add(-time.Minute))
+	if err != nil {
+		t.Fatalf("IssueFamily() error = %v, want nil", err)
+	}
+	if err := family.Revoke(); err != nil {
+		t.Fatalf("fixture Revoke: %v", err)
+	}
+	now := time.Now()
+
+	err = family.Rotate(now, "hash-gen-1", "hash-gen-2", now.Add(24*time.Hour))
+	if !errors.Is(err, ErrTokenReuseDetected) {
+		t.Fatalf("Rotate() on a revoked-and-expired family error = %v, want ErrTokenReuseDetected (the revoked check must win over the expiry check)", err)
+	}
+}
+
 func TestRefreshTokenFamily_Rotate_Expired(t *testing.T) {
 	id, _ := NewFamilyID("11111111-1111-1111-1111-111111111111")
 	accountID, _ := NewAccountID("22222222-2222-2222-2222-222222222222")
