@@ -38,12 +38,11 @@ func main() {
 		log.Fatalf("config: %v", err)
 	}
 
-	ctx := context.Background()
-
 	if err := runMigrations(cfg.DatabaseURL); err != nil {
 		log.Fatalf("migrate: %v", err)
 	}
 
+	ctx := context.Background()
 	pool, err := pgxpool.New(ctx, cfg.DatabaseURL)
 	if err != nil {
 		log.Fatalf("connect postgres: %v", err)
@@ -90,6 +89,9 @@ func main() {
 }
 
 func runMigrations(databaseURL string) error {
+	// Relative to the process's working directory — must run from the repo
+	// root (or a container WORKDIR laid out the same way; see the
+	// Dockerfile's COPY destinations for the migrations directory).
 	m, err := migrate.New("file://internal/identity/infra/postgres/migrations", databaseURL)
 	if err != nil {
 		return err
