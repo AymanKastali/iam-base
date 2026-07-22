@@ -14,4 +14,9 @@ var (
 	ErrAccountAlreadyActive   = errors.New("account already active")
 	ErrInvalidAccountStatus   = errors.New("invalid account status")
 	ErrInvalidFamilyID        = errors.New("invalid family id")
+
+	ErrTokenReuseDetected               = errors.New("refresh token reuse detected")
+	ErrRefreshTokenExpired              = errors.New("refresh token expired")
+	ErrRefreshTokenFamilyAlreadyRevoked = errors.New("refresh token family already revoked")
+	ErrRefreshTokenFamilyNotFound       = errors.New("refresh token family not found")
 )
