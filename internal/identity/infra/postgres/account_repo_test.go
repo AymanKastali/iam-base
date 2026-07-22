@@ -3,12 +3,8 @@ package postgres
 import (
 	"context"
 	"errors"
-	"strings"
 	"testing"
 
-	"github.com/golang-migrate/migrate/v4"
-	_ "github.com/golang-migrate/migrate/v4/database/pgx/v5"
-	_ "github.com/golang-migrate/migrate/v4/source/file"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
@@ -35,17 +31,8 @@ func newTestRepo(t *testing.T) *AccountRepository {
 	if err != nil {
 		t.Fatalf("connection string: %v", err)
 	}
-	// The pgx/v5 migrate driver registers under the "pgx5" scheme, not
-	// "postgres" — rewrite the DSN's scheme for migrate.New; pgxpool.New
-	// below still takes the original postgres:// DSN.
-	migrateDSN := "pgx5://" + strings.TrimPrefix(dsn, "postgres://")
-
-	m, err := migrate.New("file://migrations", migrateDSN)
-	if err != nil {
-		t.Fatalf("migrate.New: %v", err)
-	}
-	if err := m.Up(); err != nil {
-		t.Fatalf("migrate up: %v", err)
+	if err := Migrate(dsn, "file://migrations"); err != nil {
+		t.Fatalf("Migrate: %v", err)
 	}
 
 	pool, err := pgxpool.New(ctx, dsn)
