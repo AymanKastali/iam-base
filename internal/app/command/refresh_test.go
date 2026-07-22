@@ -66,6 +66,17 @@ func TestRotateRefreshTokenHandler_Handle_MalformedToken(t *testing.T) {
 	}
 }
 
+func TestRotateRefreshTokenHandler_Handle_RepositoryFailure_Propagates(t *testing.T) {
+	repoErr := errors.New("connection refused")
+	repo := &fakeRefreshTokenRepo{findErr: repoErr}
+	h := RotateRefreshTokenHandler{Repo: repo, TokenGen: fakeTokenGenerator{}, Issuer: fakeIssuer{}, Clock: fakeClock{now: time.Now()}, RefreshTokenTTL: time.Hour}
+
+	_, err := h.Handle(context.Background(), RotateRefreshTokenCommand{RefreshToken: "family-1.some-secret"})
+	if !errors.Is(err, repoErr) {
+		t.Fatalf("Handle() error = %v, want repository error to propagate (not be masked as ErrInvalidRefreshToken)", err)
+	}
+}
+
 func TestRotateRefreshTokenHandler_Handle_UnknownFamily(t *testing.T) {
 	h := RotateRefreshTokenHandler{Repo: newFakeRefreshTokenRepo(), TokenGen: fakeTokenGenerator{}, Issuer: fakeIssuer{}, Clock: fakeClock{now: time.Now()}, RefreshTokenTTL: time.Hour}
 

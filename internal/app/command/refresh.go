@@ -3,6 +3,7 @@ package command
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/AymanKastali/iam-base/internal/app"
@@ -38,7 +39,10 @@ func (h RotateRefreshTokenHandler) Handle(ctx context.Context, cmd RotateRefresh
 
 	family, err := h.Repo.FindByID(ctx, familyID)
 	if err != nil {
-		return RefreshResult{}, ErrInvalidRefreshToken
+		if errors.Is(err, domain.ErrRefreshTokenFamilyNotFound) {
+			return RefreshResult{}, ErrInvalidRefreshToken
+		}
+		return RefreshResult{}, err
 	}
 
 	newSecret, newHash, err := h.TokenGen.Generate()
