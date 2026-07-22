@@ -1,3 +1,4 @@
+// Package passwordhash provides the argon2id adapter for app.PasswordHasher.
 package passwordhash
 
 import (
@@ -6,7 +7,7 @@ import (
 	"github.com/AymanKastali/iam-base/internal/identity/domain"
 )
 
-const algoName = "argon2id"
+const algName = "argon2id"
 const credentialVersion = 1
 
 type Argon2IDHasher struct{}
@@ -16,7 +17,7 @@ func (Argon2IDHasher) Hash(password string) (domain.Credential, error) {
 	if err != nil {
 		return domain.Credential{}, err
 	}
-	return domain.NewCredential(hash, algoName, credentialVersion)
+	return domain.NewCredential(hash, algName, credentialVersion)
 }
 
 func (Argon2IDHasher) Verify(credential domain.Credential, password string) (bool, error) {

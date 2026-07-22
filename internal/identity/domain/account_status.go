@@ -8,10 +8,14 @@ const (
 )
 
 func (s AccountStatus) String() string {
-	if s == StatusDisabled {
+	switch s {
+	case StatusActive:
+		return "active"
+	case StatusDisabled:
 		return "disabled"
+	default:
+		return "unknown"
 	}
-	return "active"
 }
 
 // ParseAccountStatus parses AccountStatus.String()'s output back into an

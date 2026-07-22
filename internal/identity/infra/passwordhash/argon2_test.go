@@ -10,7 +10,7 @@ func TestArgon2IDHasher_HashAndVerify(t *testing.T) {
 		t.Fatalf("Hash() error = %v, want nil", err)
 	}
 	if cred.Alg() != "argon2id" {
-		t.Errorf("Algo() = %q, want argon2id", cred.Alg())
+		t.Errorf("Alg() = %q, want argon2id", cred.Alg())
 	}
 
 	ok, err := h.Verify(cred, "correct horse battery staple")
