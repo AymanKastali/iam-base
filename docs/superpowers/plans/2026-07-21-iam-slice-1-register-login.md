@@ -2704,6 +2704,7 @@ package main
 
 import (
 	"context"
+	"crypto/rsa"
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
@@ -2711,6 +2712,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -2719,13 +2721,13 @@ import (
 	_ "github.com/golang-migrate/migrate/v4/source/file"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/AymanKastali/iam-base/internal/infra/config"
 	"github.com/AymanKastali/iam-base/internal/identity/app/command"
 	"github.com/AymanKastali/iam-base/internal/identity/app/query"
 	"github.com/AymanKastali/iam-base/internal/identity/infra/httpapi"
 	"github.com/AymanKastali/iam-base/internal/identity/infra/jwt"
 	"github.com/AymanKastali/iam-base/internal/identity/infra/passwordhash"
 	"github.com/AymanKastali/iam-base/internal/identity/infra/postgres"
+	"github.com/AymanKastali/iam-base/internal/infra/config"
 )
 
 type systemClock struct{}
@@ -2792,7 +2794,9 @@ func runMigrations(databaseURL string) error {
 	// Relative to the process's working directory — must run from the repo
 	// root (or a container WORKDIR laid out the same way; see the
 	// Dockerfile's COPY destinations for the migrations directory).
-	m, err := migrate.New("file://internal/identity/infra/postgres/migrations", databaseURL)
+	// Convert postgres:// or postgresql:// scheme to pgx5:// for the migrate driver.
+	migrateDSN := "pgx5://" + strings.TrimPrefix(strings.TrimPrefix(databaseURL, "postgres://"), "postgresql://")
+	m, err := migrate.New("file://internal/identity/infra/postgres/migrations", migrateDSN)
 	if err != nil {
 		return err
 	}
@@ -2841,11 +2845,29 @@ git commit -m "feat: wire composition root for the identity HTTP server"
 ### Task 12: Dockerfile, docker-compose, end-to-end smoke test
 
 **Files:**
+- Create: `.dockerignore`
 - Create: `deployments/Dockerfile`
 - Create: `deployments/docker-compose.yml`
 
 **Interfaces:**
 - Consumes: the built binary from Task 11 (`cmd/server`).
+
+- [ ] **Step 0: Write `.dockerignore`**
+
+`docker-compose.yml`'s build context is `..` (the repo root), and the Dockerfile's builder stage does `COPY . .` — without this, the locally-generated `deployments/keys/private.pem` (Step 3) would get copied into the builder stage and baked into a cached image layer, even though it's correctly gitignored from the repo itself.
+
+```
+# .dockerignore
+deployments/keys/
+.git/
+.superpowers/
+docs/
+*.md
+
+/bin/
+*.test
+*.out
+```
 
 - [ ] **Step 1: Write the Dockerfile**
 
@@ -2915,9 +2937,14 @@ volumes:
 Run:
 ```bash
 mkdir -p deployments/keys
-openssl genrsa -out deployments/keys/private.pem 2048
+openssl genrsa -traditional -out deployments/keys/private.pem 2048
 docker compose -f deployments/docker-compose.yml up --build -d
 ```
+The `-traditional` flag matters: modern OpenSSL defaults to PKCS8 output
+(`-----BEGIN PRIVATE KEY-----`), but `main.go` parses the key with
+`x509.ParsePKCS1PrivateKey`, which requires PKCS1 format
+(`-----BEGIN RSA PRIVATE KEY-----`). Without it, the server fails to
+start with an unhelpful parse error.
 Expected: both containers start; `docker compose -f deployments/docker-compose.yml ps` shows `identity` and `postgres` as running/healthy.
 
 - [ ] **Step 4: Smoke-test the running stack**
@@ -2946,7 +2973,7 @@ Expected: HTTP 200 with `{"keys":[{"kty":"RSA","use":"sig","kid":"1","alg":"RS25
 
 ```bash
 docker compose -f deployments/docker-compose.yml down
-git add deployments
+git add .dockerignore deployments
 git commit -m "feat: add Dockerfile and docker-compose for self-hosted deployment"
 ```
 
