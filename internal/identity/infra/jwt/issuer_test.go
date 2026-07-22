@@ -38,7 +38,7 @@ func TestRSAIssuer_IssueAndVerify(t *testing.T) {
 
 	parsed, err := jwtlib.Parse(token, func(tok *jwtlib.Token) (interface{}, error) {
 		return &priv.PublicKey, nil
-	}, jwtlib.WithValidMethods([]string{"RS256"}), jwtlib.WithoutClaimsValidation())
+	}, jwtlib.WithValidMethods([]string{"RS256"}), jwtlib.WithTimeFunc(func() time.Time { return now }))
 	if err != nil || !parsed.Valid {
 		t.Fatalf("Parse() error = %v, valid = %v", err, parsed.Valid)
 	}
