@@ -76,6 +76,17 @@ func TestLoginHandler_Handle_WrongPassword(t *testing.T) {
 	}
 }
 
+func TestLoginHandler_Handle_RepositoryFailure_Propagates(t *testing.T) {
+	repoErr := errors.New("connection refused")
+	repo := &fakeAccountRepo{lookupErr: repoErr}
+	h := LoginHandler{Repo: repo, Hasher: fakeHasher{}, Issuer: fakeIssuer{}}
+
+	_, err := h.Handle(context.Background(), LoginCommand{Email: "a@b.com", Password: sampleCredential})
+	if !errors.Is(err, repoErr) {
+		t.Fatalf("Handle() error = %v, want repository error to propagate (not be masked as ErrInvalidCredentials)", err)
+	}
+}
+
 func TestLoginHandler_Handle_UnknownEmail(t *testing.T) {
 	repo := newFakeAccountRepo()
 	h := LoginHandler{Repo: repo, Hasher: fakeHasher{}, Issuer: fakeIssuer{}}

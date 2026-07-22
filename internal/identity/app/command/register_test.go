@@ -14,8 +14,9 @@ import (
 const sampleCredential = "secret123"
 
 type fakeAccountRepo struct {
-	accounts map[string]*domain.Account
-	saveErr  error
+	accounts  map[string]*domain.Account
+	saveErr   error
+	lookupErr error
 }
 
 func newFakeAccountRepo() *fakeAccountRepo {
@@ -31,6 +32,9 @@ func (r *fakeAccountRepo) Save(ctx context.Context, a *domain.Account) error {
 }
 
 func (r *fakeAccountRepo) FindByEmail(ctx context.Context, e domain.Email) (*domain.Account, error) {
+	if r.lookupErr != nil {
+		return nil, r.lookupErr
+	}
 	a, ok := r.accounts[e.String()]
 	if !ok {
 		return nil, domain.ErrAccountNotFound

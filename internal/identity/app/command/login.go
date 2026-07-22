@@ -34,8 +34,11 @@ func (h LoginHandler) Handle(ctx context.Context, cmd LoginCommand) (LoginResult
 	}
 	account, err := h.Repo.FindByEmail(ctx, email)
 	if err != nil {
-		h.padTimingCost(cmd.Password)
-		return LoginResult{}, ErrInvalidCredentials
+		if errors.Is(err, domain.ErrAccountNotFound) {
+			h.padTimingCost(cmd.Password)
+			return LoginResult{}, ErrInvalidCredentials
+		}
+		return LoginResult{}, err
 	}
 	if err := account.Login(); err != nil {
 		h.padTimingCost(cmd.Password)
