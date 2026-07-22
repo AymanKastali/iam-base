@@ -12,3 +12,7 @@ type UUIDGenerator struct{}
 func (UUIDGenerator) NewAccountID() (domain.AccountID, error) {
 	return domain.NewAccountID(uuid.NewString())
 }
+
+func (UUIDGenerator) NewFamilyID() (domain.FamilyID, error) {
+	return domain.NewFamilyID(uuid.NewString())
+}

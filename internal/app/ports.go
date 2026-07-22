@@ -22,4 +22,14 @@ type Clock interface {
 
 type IDGenerator interface {
 	NewAccountID() (domain.AccountID, error)
+	NewFamilyID() (domain.FamilyID, error)
+}
+
+// RefreshTokenGenerator issues opaque refresh-token secrets and hashes them
+// for storage/comparison. The raw secret is returned to the caller once and
+// is never persisted — only its hash is stored, so a leaked database dump
+// does not expose usable refresh tokens.
+type RefreshTokenGenerator interface {
+	Generate() (raw string, hash string, err error)
+	Hash(raw string) string
 }
