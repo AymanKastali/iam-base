@@ -23,14 +23,8 @@ func newLoginInput(email, password string) *LoginInput {
 	return input
 }
 
-func TestLoginHandler_Handle_Success(t *testing.T) {
-	repo := &stubAccountRepo{}
-	registerHandler := command.RegisterAccountHandler{Repo: repo, Hasher: stubHasher{}, Policy: domain.MinLengthPasswordPolicy{}, IDGen: stubIDGenerator{}}
-	if _, err := registerHandler.Handle(context.Background(), command.RegisterAccountCommand{Email: "a@b.com", Password: sampleCredential}); err != nil {
-		t.Fatalf("fixture register: %v", err)
-	}
-
-	h := LoginHandler{Handler: command.LoginHandler{
+func newLoginHandler(repo *stubAccountRepo) LoginHandler {
+	return LoginHandler{Handler: command.LoginHandler{
 		Repo:            repo,
 		Hasher:          stubHasher{},
 		Issuer:          stubIssuer{},
@@ -40,6 +34,16 @@ func TestLoginHandler_Handle_Success(t *testing.T) {
 		Clock:           stubClock{now: time.Now()},
 		RefreshTokenTTL: 24 * time.Hour,
 	}}
+}
+
+func TestLoginHandler_Handle_Success(t *testing.T) {
+	repo := &stubAccountRepo{}
+	registerHandler := command.RegisterAccountHandler{Repo: repo, Hasher: stubHasher{}, Policy: domain.MinLengthPasswordPolicy{}, IDGen: stubIDGenerator{}}
+	if _, err := registerHandler.Handle(context.Background(), command.RegisterAccountCommand{Email: "a@b.com", Password: sampleCredential}); err != nil {
+		t.Fatalf("fixture register: %v", err)
+	}
+
+	h := newLoginHandler(repo)
 
 	out, err := h.Handle(context.Background(), newLoginInput("a@b.com", sampleCredential))
 
@@ -56,16 +60,7 @@ func TestLoginHandler_Handle_Success(t *testing.T) {
 
 func TestLoginHandler_Handle_InvalidCredentials(t *testing.T) {
 	repo := &stubAccountRepo{}
-	h := LoginHandler{Handler: command.LoginHandler{
-		Repo:            repo,
-		Hasher:          stubHasher{},
-		Issuer:          stubIssuer{},
-		RefreshRepo:     newStubRefreshTokenRepo(),
-		TokenGen:        stubTokenGenerator{nextSecret: "s", nextHash: "h"},
-		IDGen:           stubIDGenerator{},
-		Clock:           stubClock{now: time.Now()},
-		RefreshTokenTTL: 24 * time.Hour,
-	}}
+	h := newLoginHandler(repo)
 
 	_, err := h.Handle(context.Background(), newLoginInput("missing@b.com", sampleCredential))
 
@@ -82,16 +77,7 @@ func TestLoginHandler_Handle_DisabledAccount(t *testing.T) {
 		t.Fatalf("fixture Disable: %v", err)
 	}
 
-	h := LoginHandler{Handler: command.LoginHandler{
-		Repo:            repo,
-		Hasher:          stubHasher{},
-		Issuer:          stubIssuer{},
-		RefreshRepo:     newStubRefreshTokenRepo(),
-		TokenGen:        stubTokenGenerator{nextSecret: "s", nextHash: "h"},
-		IDGen:           stubIDGenerator{},
-		Clock:           stubClock{now: time.Now()},
-		RefreshTokenTTL: 24 * time.Hour,
-	}}
+	h := newLoginHandler(repo)
 
 	_, err := h.Handle(context.Background(), newLoginInput("a@b.com", sampleCredential))
 

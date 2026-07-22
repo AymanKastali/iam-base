@@ -63,9 +63,13 @@ func newRegisterInput(email, password string) *RegisterInput {
 	return input
 }
 
+func newRegisterHandler(repo *stubAccountRepo) RegisterHandler {
+	return RegisterHandler{Handler: command.RegisterAccountHandler{Repo: repo, Hasher: stubHasher{}, Policy: domain.MinLengthPasswordPolicy{}, IDGen: stubIDGenerator{}}}
+}
+
 func TestRegisterHandler_Handle_Success(t *testing.T) {
 	repo := &stubAccountRepo{}
-	h := RegisterHandler{Handler: command.RegisterAccountHandler{Repo: repo, Hasher: stubHasher{}, Policy: domain.MinLengthPasswordPolicy{}, IDGen: stubIDGenerator{}}}
+	h := newRegisterHandler(repo)
 
 	out, err := h.Handle(context.Background(), newRegisterInput("a@b.com", sampleCredential))
 
@@ -79,7 +83,7 @@ func TestRegisterHandler_Handle_Success(t *testing.T) {
 
 func TestRegisterHandler_Handle_DuplicateEmail(t *testing.T) {
 	repo := &stubAccountRepo{saveErr: domain.ErrEmailAlreadyRegistered}
-	h := RegisterHandler{Handler: command.RegisterAccountHandler{Repo: repo, Hasher: stubHasher{}, Policy: domain.MinLengthPasswordPolicy{}, IDGen: stubIDGenerator{}}}
+	h := newRegisterHandler(repo)
 
 	_, err := h.Handle(context.Background(), newRegisterInput("a@b.com", sampleCredential))
 
@@ -88,7 +92,7 @@ func TestRegisterHandler_Handle_DuplicateEmail(t *testing.T) {
 
 func TestRegisterHandler_Handle_InvalidEmail(t *testing.T) {
 	repo := &stubAccountRepo{}
-	h := RegisterHandler{Handler: command.RegisterAccountHandler{Repo: repo, Hasher: stubHasher{}, Policy: domain.MinLengthPasswordPolicy{}, IDGen: stubIDGenerator{}}}
+	h := newRegisterHandler(repo)
 
 	_, err := h.Handle(context.Background(), newRegisterInput("not-an-email", sampleCredential))
 
@@ -97,7 +101,7 @@ func TestRegisterHandler_Handle_InvalidEmail(t *testing.T) {
 
 func TestRegisterHandler_Handle_PasswordTooShort(t *testing.T) {
 	repo := &stubAccountRepo{}
-	h := RegisterHandler{Handler: command.RegisterAccountHandler{Repo: repo, Hasher: stubHasher{}, Policy: domain.MinLengthPasswordPolicy{}, IDGen: stubIDGenerator{}}}
+	h := newRegisterHandler(repo)
 
 	_, err := h.Handle(context.Background(), newRegisterInput("a@b.com", "short"))
 
@@ -106,7 +110,7 @@ func TestRegisterHandler_Handle_PasswordTooShort(t *testing.T) {
 
 func TestRegisterHandler_Handle_UnexpectedError(t *testing.T) {
 	repo := &stubAccountRepo{saveErr: errors.New("boom")}
-	h := RegisterHandler{Handler: command.RegisterAccountHandler{Repo: repo, Hasher: stubHasher{}, Policy: domain.MinLengthPasswordPolicy{}, IDGen: stubIDGenerator{}}}
+	h := newRegisterHandler(repo)
 
 	_, err := h.Handle(context.Background(), newRegisterInput("a@b.com", sampleCredential))
 
