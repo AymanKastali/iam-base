@@ -1,0 +1,10 @@
+# Superpowers scratch state (SDD ledger, task briefs, reports) — not part of the repo history
+.superpowers/
+
+# Generated JWT signing keys for local docker-compose runs
+deployments/keys/
+
+# Go build artifacts
+/bin/
+*.test
+*.out

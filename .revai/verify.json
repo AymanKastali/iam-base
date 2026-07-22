@@ -1,0 +1,8 @@
+{
+  "commands": [
+    { "name": "test", "cmd": "go test ./...", "blocking": true },
+    { "name": "lint", "cmd": "golangci-lint run", "blocking": true },
+    { "name": "build", "cmd": "go build ./...", "blocking": false },
+    { "name": "format", "cmd": "gofmt -l .", "blocking": false }
+  ]
+}
