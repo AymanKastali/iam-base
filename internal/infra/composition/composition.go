@@ -20,6 +20,7 @@ import (
 	"github.com/AymanKastali/iam-base/internal/infra/jwt"
 	"github.com/AymanKastali/iam-base/internal/infra/passwordhash"
 	"github.com/AymanKastali/iam-base/internal/infra/postgres"
+	"github.com/AymanKastali/iam-base/internal/infra/refreshtoken"
 )
 
 type systemClock struct{}
@@ -52,15 +53,28 @@ func Build(ctx context.Context, cfg config.Config) (*Application, error) {
 	}
 
 	repo := postgres.NewAccountRepository(pool)
+	refreshTokenRepo := postgres.NewRefreshTokenRepository(pool)
 	hasher := passwordhash.Argon2IDHasher{}
 	issuer := jwt.NewRSAIssuer(privateKey, cfg.JWTKeyID, cfg.AccessTokenTTL, systemClock{})
+	tokenGen := refreshtoken.SHA256Generator{}
+	idGen := idgen.UUIDGenerator{}
+	clock := systemClock{}
 
-	registerHandler := httpapi.RegisterHandler{Handler: command.RegisterAccountHandler{Repo: repo, Hasher: hasher, Policy: domain.MinLengthPasswordPolicy{}, IDGen: idgen.UUIDGenerator{}}}
-	loginHandler := httpapi.LoginHandler{Handler: command.LoginHandler{Repo: repo, Hasher: hasher, Issuer: issuer}}
+	registerHandler := httpapi.RegisterHandler{Handler: command.RegisterAccountHandler{Repo: repo, Hasher: hasher, Policy: domain.MinLengthPasswordPolicy{}, IDGen: idGen}}
+	loginHandler := httpapi.LoginHandler{Handler: command.LoginHandler{
+		Repo: repo, Hasher: hasher, Issuer: issuer,
+		RefreshRepo: refreshTokenRepo, TokenGen: tokenGen, IDGen: idGen,
+		Clock: clock, RefreshTokenTTL: cfg.RefreshTokenTTL,
+	}}
+	refreshHandler := httpapi.RefreshHandler{Handler: command.RotateRefreshTokenHandler{
+		Repo: refreshTokenRepo, TokenGen: tokenGen, Issuer: issuer,
+		Clock: clock, RefreshTokenTTL: cfg.RefreshTokenTTL,
+	}}
+	logoutHandler := httpapi.LogoutHandler{Handler: command.RevokeSessionHandler{Repo: refreshTokenRepo}}
 	jwksHandler := httpapi.JWKSHandler{Handler: query.GetJWKSHandler{Port: issuer}}
 	limiter := httpapi.NewIPRateLimiter(cfg.RateLimitRPS, cfg.RateLimitBurst)
 
-	router := httpapi.NewRouter(registerHandler, loginHandler, jwksHandler, limiter)
+	router := httpapi.NewRouter(registerHandler, loginHandler, refreshHandler, logoutHandler, jwksHandler, limiter)
 
 	return &Application{Router: router, Pool: pool}, nil
 }
