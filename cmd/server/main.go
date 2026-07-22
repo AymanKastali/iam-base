@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -92,7 +93,9 @@ func runMigrations(databaseURL string) error {
 	// Relative to the process's working directory — must run from the repo
 	// root (or a container WORKDIR laid out the same way; see the
 	// Dockerfile's COPY destinations for the migrations directory).
-	m, err := migrate.New("file://internal/identity/infra/postgres/migrations", databaseURL)
+	// Convert postgres:// or postgresql:// scheme to pgx5:// for the migrate driver.
+	migrateDSN := "pgx5://" + strings.TrimPrefix(strings.TrimPrefix(databaseURL, "postgres://"), "postgresql://")
+	m, err := migrate.New("file://internal/identity/infra/postgres/migrations", migrateDSN)
 	if err != nil {
 		return err
 	}
