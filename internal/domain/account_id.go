@@ -1,8 +1,9 @@
 package domain
 
 // AccountID is the Account aggregate's identity — an opaque, non-empty
-// value. The app layer generates the raw value (e.g. a UUID); domain only
-// validates and holds it, exactly like Email or Credential.
+// value. The raw value is produced by an infra-provided app.IDGenerator
+// adapter; domain only validates and holds it, exactly like Email or
+// Credential.
 type AccountID struct {
 	value string
 }

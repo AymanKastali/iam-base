@@ -13,8 +13,10 @@ import (
 
 	"github.com/AymanKastali/iam-base/internal/app/command"
 	"github.com/AymanKastali/iam-base/internal/app/query"
+	"github.com/AymanKastali/iam-base/internal/domain"
 	"github.com/AymanKastali/iam-base/internal/infra/config"
 	"github.com/AymanKastali/iam-base/internal/infra/httpapi"
+	"github.com/AymanKastali/iam-base/internal/infra/idgen"
 	"github.com/AymanKastali/iam-base/internal/infra/jwt"
 	"github.com/AymanKastali/iam-base/internal/infra/passwordhash"
 	"github.com/AymanKastali/iam-base/internal/infra/postgres"
@@ -53,7 +55,7 @@ func Build(ctx context.Context, cfg config.Config) (*Application, error) {
 	hasher := passwordhash.Argon2IDHasher{}
 	issuer := jwt.NewRSAIssuer(privateKey, cfg.JWTKeyID, cfg.AccessTokenTTL, systemClock{})
 
-	registerHandler := httpapi.RegisterHandler{Handler: command.RegisterAccountHandler{Repo: repo, Hasher: hasher}}
+	registerHandler := httpapi.RegisterHandler{Handler: command.RegisterAccountHandler{Repo: repo, Hasher: hasher, Policy: domain.MinLengthPasswordPolicy{}, IDGen: idgen.UUIDGenerator{}}}
 	loginHandler := httpapi.LoginHandler{Handler: command.LoginHandler{Repo: repo, Hasher: hasher, Issuer: issuer}}
 	jwksHandler := httpapi.JWKSHandler{Handler: query.GetJWKSHandler{Port: issuer}}
 	limiter := httpapi.NewIPRateLimiter(cfg.RateLimitRPS, cfg.RateLimitBurst)

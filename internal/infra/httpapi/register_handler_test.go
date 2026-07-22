@@ -48,9 +48,15 @@ func (stubHasher) Verify(c domain.Credential, password string) (bool, error) {
 	return c.Hash() == "hashed:"+password, nil
 }
 
+type stubIDGenerator struct{}
+
+func (stubIDGenerator) NewAccountID() (domain.AccountID, error) {
+	return domain.NewAccountID("stub-account-id")
+}
+
 func TestRegisterHandler_ServeHTTP_Success(t *testing.T) {
 	repo := &stubAccountRepo{}
-	h := RegisterHandler{Handler: command.RegisterAccountHandler{Repo: repo, Hasher: stubHasher{}}}
+	h := RegisterHandler{Handler: command.RegisterAccountHandler{Repo: repo, Hasher: stubHasher{}, Policy: domain.MinLengthPasswordPolicy{}, IDGen: stubIDGenerator{}}}
 
 	body, _ := json.Marshal(map[string]string{"email": "a@b.com", "password": sampleCredential})
 	req := httptest.NewRequest(http.MethodPost, "/v1/auth/register", bytes.NewReader(body))
@@ -65,7 +71,7 @@ func TestRegisterHandler_ServeHTTP_Success(t *testing.T) {
 
 func TestRegisterHandler_ServeHTTP_DuplicateEmail(t *testing.T) {
 	repo := &stubAccountRepo{saveErr: domain.ErrEmailAlreadyRegistered}
-	h := RegisterHandler{Handler: command.RegisterAccountHandler{Repo: repo, Hasher: stubHasher{}}}
+	h := RegisterHandler{Handler: command.RegisterAccountHandler{Repo: repo, Hasher: stubHasher{}, Policy: domain.MinLengthPasswordPolicy{}, IDGen: stubIDGenerator{}}}
 
 	body, _ := json.Marshal(map[string]string{"email": "a@b.com", "password": sampleCredential})
 	req := httptest.NewRequest(http.MethodPost, "/v1/auth/register", bytes.NewReader(body))
@@ -80,7 +86,7 @@ func TestRegisterHandler_ServeHTTP_DuplicateEmail(t *testing.T) {
 
 func TestRegisterHandler_ServeHTTP_InvalidEmail(t *testing.T) {
 	repo := &stubAccountRepo{}
-	h := RegisterHandler{Handler: command.RegisterAccountHandler{Repo: repo, Hasher: stubHasher{}}}
+	h := RegisterHandler{Handler: command.RegisterAccountHandler{Repo: repo, Hasher: stubHasher{}, Policy: domain.MinLengthPasswordPolicy{}, IDGen: stubIDGenerator{}}}
 
 	body, _ := json.Marshal(map[string]string{"email": "not-an-email", "password": sampleCredential})
 	req := httptest.NewRequest(http.MethodPost, "/v1/auth/register", bytes.NewReader(body))
@@ -88,14 +94,14 @@ func TestRegisterHandler_ServeHTTP_InvalidEmail(t *testing.T) {
 
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400", rec.Code)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422", rec.Code)
 	}
 }
 
 func TestRegisterHandler_ServeHTTP_PasswordTooShort(t *testing.T) {
 	repo := &stubAccountRepo{}
-	h := RegisterHandler{Handler: command.RegisterAccountHandler{Repo: repo, Hasher: stubHasher{}}}
+	h := RegisterHandler{Handler: command.RegisterAccountHandler{Repo: repo, Hasher: stubHasher{}, Policy: domain.MinLengthPasswordPolicy{}, IDGen: stubIDGenerator{}}}
 
 	body, _ := json.Marshal(map[string]string{"email": "a@b.com", "password": "short"})
 	req := httptest.NewRequest(http.MethodPost, "/v1/auth/register", bytes.NewReader(body))
@@ -103,14 +109,14 @@ func TestRegisterHandler_ServeHTTP_PasswordTooShort(t *testing.T) {
 
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400, body = %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422, body = %s", rec.Code, rec.Body.String())
 	}
 }
 
 func TestRegisterHandler_ServeHTTP_BodyTooLarge(t *testing.T) {
 	repo := &stubAccountRepo{}
-	h := RegisterHandler{Handler: command.RegisterAccountHandler{Repo: repo, Hasher: stubHasher{}}}
+	h := RegisterHandler{Handler: command.RegisterAccountHandler{Repo: repo, Hasher: stubHasher{}, Policy: domain.MinLengthPasswordPolicy{}, IDGen: stubIDGenerator{}}}
 
 	oversizedPassword := strings.Repeat("a", maxRequestBodyBytes)
 	body, _ := json.Marshal(map[string]string{"email": "a@b.com", "password": oversizedPassword})
@@ -126,7 +132,7 @@ func TestRegisterHandler_ServeHTTP_BodyTooLarge(t *testing.T) {
 
 func TestRegisterHandler_ServeHTTP_UnexpectedError(t *testing.T) {
 	repo := &stubAccountRepo{saveErr: errors.New("boom")}
-	h := RegisterHandler{Handler: command.RegisterAccountHandler{Repo: repo, Hasher: stubHasher{}}}
+	h := RegisterHandler{Handler: command.RegisterAccountHandler{Repo: repo, Hasher: stubHasher{}, Policy: domain.MinLengthPasswordPolicy{}, IDGen: stubIDGenerator{}}}
 
 	body, _ := json.Marshal(map[string]string{"email": "a@b.com", "password": sampleCredential})
 	req := httptest.NewRequest(http.MethodPost, "/v1/auth/register", bytes.NewReader(body))

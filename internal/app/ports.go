@@ -19,3 +19,7 @@ type TokenIssuer interface {
 type Clock interface {
 	Now() time.Time
 }
+
+type IDGenerator interface {
+	NewAccountID() (domain.AccountID, error)
+}

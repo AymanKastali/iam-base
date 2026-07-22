@@ -1,0 +1,51 @@
+package httpapi
+
+import (
+	"errors"
+	"log"
+	"net/http"
+
+	"github.com/AymanKastali/iam-base/internal/app"
+)
+
+// kindedError is implemented by any app-layer error that carries a Kind and
+// a machine-readable Code (see app.Error). Handlers never name individual
+// errors — they just call respondError.
+type kindedError interface {
+	error
+	Kind() app.Kind
+	Code() string
+}
+
+// respondError classifies err via kindedError and writes the matching
+// response; anything that doesn't implement it is logged and returned as a
+// generic 500. This is the single place that knows how app errors become
+// wire responses — handlers only decide when to call it.
+func respondError(w http.ResponseWriter, action string, err error) {
+	if ke, ok := errors.AsType[kindedError](err); ok {
+		writeError(w, statusForKind(ke.Kind()), ke.Code(), ke.Error())
+		return
+	}
+	log.Printf("%s: unexpected error: %v", action, err)
+	writeError(w, http.StatusInternalServerError, "internal_error", "internal error")
+}
+
+func statusForKind(k app.Kind) int {
+	switch k {
+	case app.KindValidation:
+		// A business rule rejected the submitted data itself (e.g. password
+		// policy, email format) — the payload is well-formed but semantically
+		// invalid.
+		return http.StatusUnprocessableEntity
+	case app.KindConflict:
+		// The data is valid but conflicts with existing state (e.g. email
+		// already registered) — RFC 9110's 409, not 422.
+		return http.StatusConflict
+	case app.KindUnauthorized:
+		return http.StatusUnauthorized
+	case app.KindNotFound:
+		return http.StatusNotFound
+	default:
+		return http.StatusInternalServerError
+	}
+}

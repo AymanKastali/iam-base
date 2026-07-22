@@ -5,17 +5,10 @@ package command
 
 import (
 	"context"
-	"errors"
-
-	"github.com/google/uuid"
 
 	"github.com/AymanKastali/iam-base/internal/app"
 	"github.com/AymanKastali/iam-base/internal/domain"
 )
-
-const minPasswordLength = 8
-
-var ErrPasswordTooShort = errors.New("password must be at least 8 characters")
 
 type RegisterAccountCommand struct {
 	Email    string
@@ -25,21 +18,25 @@ type RegisterAccountCommand struct {
 type RegisterAccountHandler struct {
 	Repo   domain.AccountRepository
 	Hasher app.PasswordHasher
+	Policy domain.PasswordPolicy
+	IDGen  app.IDGenerator
 }
 
-func (h RegisterAccountHandler) Handle(ctx context.Context, cmd RegisterAccountCommand) (domain.AccountID, error) {
+func (h RegisterAccountHandler) Handle(ctx context.Context, cmd RegisterAccountCommand) (_ domain.AccountID, err error) {
+	defer func() { err = app.Classify(err) }()
+
 	email, err := domain.NewEmail(cmd.Email)
 	if err != nil {
 		return domain.AccountID{}, err
 	}
-	if len(cmd.Password) < minPasswordLength {
-		return domain.AccountID{}, ErrPasswordTooShort
+	if err := h.Policy.Validate(cmd.Password); err != nil {
+		return domain.AccountID{}, err
 	}
 	credential, err := h.Hasher.Hash(cmd.Password)
 	if err != nil {
 		return domain.AccountID{}, err
 	}
-	id, err := domain.NewAccountID(uuid.NewString())
+	id, err := h.IDGen.NewAccountID()
 	if err != nil {
 		return domain.AccountID{}, err
 	}

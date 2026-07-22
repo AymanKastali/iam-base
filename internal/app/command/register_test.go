@@ -52,9 +52,15 @@ func (fakeHasher) Verify(c domain.Credential, password string) (bool, error) {
 	return c.Hash() == "hashed:"+password, nil
 }
 
+type fakeIDGenerator struct{}
+
+func (fakeIDGenerator) NewAccountID() (domain.AccountID, error) {
+	return domain.NewAccountID("fake-account-id")
+}
+
 func TestRegisterAccountHandler_Handle(t *testing.T) {
 	repo := newFakeAccountRepo()
-	h := RegisterAccountHandler{Repo: repo, Hasher: fakeHasher{}}
+	h := RegisterAccountHandler{Repo: repo, Hasher: fakeHasher{}, Policy: domain.MinLengthPasswordPolicy{}, IDGen: fakeIDGenerator{}}
 
 	id, err := h.Handle(context.Background(), RegisterAccountCommand{Email: "a@b.com", Password: sampleCredential})
 	if err != nil {
@@ -74,7 +80,7 @@ func TestRegisterAccountHandler_Handle(t *testing.T) {
 }
 
 func TestRegisterAccountHandler_Handle_InvalidEmail(t *testing.T) {
-	h := RegisterAccountHandler{Repo: newFakeAccountRepo(), Hasher: fakeHasher{}}
+	h := RegisterAccountHandler{Repo: newFakeAccountRepo(), Hasher: fakeHasher{}, Policy: domain.MinLengthPasswordPolicy{}, IDGen: fakeIDGenerator{}}
 
 	_, err := h.Handle(context.Background(), RegisterAccountCommand{Email: "not-an-email", Password: sampleCredential})
 	if !errors.Is(err, domain.ErrInvalidEmail) {
@@ -83,18 +89,18 @@ func TestRegisterAccountHandler_Handle_InvalidEmail(t *testing.T) {
 }
 
 func TestRegisterAccountHandler_Handle_PasswordTooShort(t *testing.T) {
-	h := RegisterAccountHandler{Repo: newFakeAccountRepo(), Hasher: fakeHasher{}}
+	h := RegisterAccountHandler{Repo: newFakeAccountRepo(), Hasher: fakeHasher{}, Policy: domain.MinLengthPasswordPolicy{}, IDGen: fakeIDGenerator{}}
 
 	_, err := h.Handle(context.Background(), RegisterAccountCommand{Email: "a@b.com", Password: "short"})
-	if !errors.Is(err, ErrPasswordTooShort) {
-		t.Fatalf("Handle() error = %v, want ErrPasswordTooShort", err)
+	if !errors.Is(err, domain.ErrPasswordTooShort) {
+		t.Fatalf("Handle() error = %v, want domain.ErrPasswordTooShort", err)
 	}
 }
 
 func TestRegisterAccountHandler_Handle_DuplicateEmail(t *testing.T) {
 	repo := newFakeAccountRepo()
 	repo.saveErr = domain.ErrEmailAlreadyRegistered
-	h := RegisterAccountHandler{Repo: repo, Hasher: fakeHasher{}}
+	h := RegisterAccountHandler{Repo: repo, Hasher: fakeHasher{}, Policy: domain.MinLengthPasswordPolicy{}, IDGen: fakeIDGenerator{}}
 
 	_, err := h.Handle(context.Background(), RegisterAccountCommand{Email: "a@b.com", Password: sampleCredential})
 	if !errors.Is(err, domain.ErrEmailAlreadyRegistered) {

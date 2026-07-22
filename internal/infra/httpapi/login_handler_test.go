@@ -22,7 +22,7 @@ func (stubIssuer) Issue(ctx context.Context, id domain.AccountID) (string, time.
 
 func TestLoginHandler_ServeHTTP_Success(t *testing.T) {
 	repo := &stubAccountRepo{}
-	registerHandler := command.RegisterAccountHandler{Repo: repo, Hasher: stubHasher{}}
+	registerHandler := command.RegisterAccountHandler{Repo: repo, Hasher: stubHasher{}, Policy: domain.MinLengthPasswordPolicy{}, IDGen: stubIDGenerator{}}
 	if _, err := registerHandler.Handle(context.Background(), command.RegisterAccountCommand{Email: "a@b.com", Password: sampleCredential}); err != nil {
 		t.Fatalf("fixture register: %v", err)
 	}
@@ -79,7 +79,7 @@ func TestLoginHandler_ServeHTTP_BodyTooLarge(t *testing.T) {
 
 func TestLoginHandler_ServeHTTP_DisabledAccount(t *testing.T) {
 	repo := &stubAccountRepo{}
-	registerHandler := command.RegisterAccountHandler{Repo: repo, Hasher: stubHasher{}}
+	registerHandler := command.RegisterAccountHandler{Repo: repo, Hasher: stubHasher{}, Policy: domain.MinLengthPasswordPolicy{}, IDGen: stubIDGenerator{}}
 	if _, err := registerHandler.Handle(context.Background(), command.RegisterAccountCommand{Email: "a@b.com", Password: sampleCredential}); err != nil {
 		t.Fatalf("fixture register: %v", err)
 	}

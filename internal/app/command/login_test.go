@@ -25,7 +25,7 @@ func (f fakeIssuer) Issue(ctx context.Context, id domain.AccountID) (string, tim
 
 func registerFixture(t *testing.T, repo *fakeAccountRepo, email, password string) {
 	t.Helper()
-	h := RegisterAccountHandler{Repo: repo, Hasher: fakeHasher{}}
+	h := RegisterAccountHandler{Repo: repo, Hasher: fakeHasher{}, Policy: domain.MinLengthPasswordPolicy{}, IDGen: fakeIDGenerator{}}
 	if _, err := h.Handle(context.Background(), RegisterAccountCommand{Email: email, Password: password}); err != nil {
 		t.Fatalf("fixture register: %v", err)
 	}
@@ -60,8 +60,8 @@ func TestLoginHandler_Handle_DisabledAccount(t *testing.T) {
 	h := LoginHandler{Repo: repo, Hasher: fakeHasher{}, Issuer: fakeIssuer{}}
 
 	_, err = h.Handle(context.Background(), LoginCommand{Email: "a@b.com", Password: sampleCredential})
-	if !errors.Is(err, domain.ErrAccountDisabled) {
-		t.Fatalf("Handle() error = %v, want ErrAccountDisabled", err)
+	if !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatalf("Handle() error = %v, want ErrInvalidCredentials (a disabled account must not be distinguishable from a wrong password)", err)
 	}
 }
 
@@ -138,8 +138,8 @@ func TestLoginHandler_Handle_DisabledAccount_PadsTimingCost(t *testing.T) {
 	spy := &spyHasher{}
 	h := LoginHandler{Repo: repo, Hasher: spy, Issuer: fakeIssuer{}}
 
-	if _, err := h.Handle(context.Background(), LoginCommand{Email: "a@b.com", Password: sampleCredential}); !errors.Is(err, domain.ErrAccountDisabled) {
-		t.Fatalf("Handle() error = %v, want ErrAccountDisabled", err)
+	if _, err := h.Handle(context.Background(), LoginCommand{Email: "a@b.com", Password: sampleCredential}); !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatalf("Handle() error = %v, want ErrInvalidCredentials (a disabled account must not be distinguishable from a wrong password)", err)
 	}
 	if spy.hashCalls != 1 {
 		t.Errorf("Hasher.Hash() call count = %d, want 1 (timing-cost padding)", spy.hashCalls)

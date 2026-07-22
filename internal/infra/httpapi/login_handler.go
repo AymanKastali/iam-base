@@ -1,12 +1,9 @@
 package httpapi
 
 import (
-	"errors"
-	"log"
 	"net/http"
 
 	"github.com/AymanKastali/iam-base/internal/app/command"
-	"github.com/AymanKastali/iam-base/internal/domain"
 )
 
 type LoginHandler struct {
@@ -33,13 +30,7 @@ func (h LoginHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	result, err := h.Handler.Handle(r.Context(), command.LoginCommand{Email: req.Email, Password: req.Password})
 	if err != nil {
-		switch {
-		case errors.Is(err, command.ErrInvalidCredentials), errors.Is(err, domain.ErrAccountDisabled):
-			writeError(w, http.StatusUnauthorized, "invalid_credentials", "invalid credentials")
-		default:
-			log.Printf("login: unexpected error: %v", err)
-			writeError(w, http.StatusInternalServerError, "internal_error", "internal error")
-		}
+		respondError(w, "login", err)
 		return
 	}
 

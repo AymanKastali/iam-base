@@ -9,7 +9,9 @@ import (
 	"github.com/AymanKastali/iam-base/internal/domain"
 )
 
-var ErrInvalidCredentials = errors.New("invalid credentials")
+// ErrInvalidCredentials is command's alias for app.ErrInvalidCredentials, so
+// callers in this package don't need to import app just to reference it.
+var ErrInvalidCredentials = app.ErrInvalidCredentials
 
 type LoginCommand struct {
 	Email    string
@@ -42,7 +44,7 @@ func (h LoginHandler) Handle(ctx context.Context, cmd LoginCommand) (LoginResult
 	}
 	if err := account.Login(); err != nil {
 		h.padTimingCost(cmd.Password)
-		return LoginResult{}, err
+		return LoginResult{}, ErrInvalidCredentials
 	}
 	ok, err := h.Hasher.Verify(account.Credential(), cmd.Password)
 	if err != nil {
