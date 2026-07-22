@@ -2902,7 +2902,7 @@ Note: `deployments/keys/` (the generated private key) must **not** be committed 
 ## Self-Review Notes
 
 - **Spec coverage:** register (Task 7/10), login with access-token-only JWT (Task 8/10), JWKS (Task 6/10), RS256 + 15m TTL (Global Constraints, Task 6), Postgres persistence with unique-email invariant (Task 5), argon2id hashing (Task 4), per-IP rate limiting on register/login (Task 9/10), Docker Compose self-deploy (Task 12). Refresh tokens, email verification, and password reset are explicitly out of scope (slice 2 / phase 2 per the design doc).
-- **Type consistency:** `domain.AccountID` (string) flows unchanged from `Account` → `AccountRepository` → command handlers → HTTP responses; `app.PasswordHasher`/`domain.AccountRepository`/`app.TokenIssuer` signatures match between `ports.go`, the fakes in tests, and the concrete adapters.
+- **Type consistency:** `domain.AccountID` (self-validating value object, `.String()` for its raw form) flows unchanged from `Account` → `AccountRepository` → command handlers → HTTP responses; `app.PasswordHasher`/`domain.AccountRepository`/`app.TokenIssuer` signatures match between `ports.go`, the fakes in tests, and the concrete adapters.
 - **No placeholders:** two intentional exceptions are called out explicitly in-line (Task 10's `contextType`, Task 11's `rsaPrivateKey`) with the exact real type to substitute, so the plan stays copy-pasteable without ambiguity.
 
 ---
