@@ -2283,6 +2283,7 @@ package httpapi
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -2354,6 +2355,36 @@ func TestRegisterHandler_ServeHTTP_DuplicateEmail(t *testing.T) {
 		t.Fatalf("status = %d, want 409", rec.Code)
 	}
 }
+
+func TestRegisterHandler_ServeHTTP_InvalidEmail(t *testing.T) {
+	repo := &stubAccountRepo{}
+	h := RegisterHandler{Handler: command.RegisterAccountHandler{Repo: repo, Hasher: stubHasher{}}}
+
+	body, _ := json.Marshal(map[string]string{"email": "not-an-email", "password": sampleCredential})
+	req := httptest.NewRequest(http.MethodPost, "/v1/auth/register", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+}
+
+func TestRegisterHandler_ServeHTTP_UnexpectedError(t *testing.T) {
+	repo := &stubAccountRepo{saveErr: errors.New("boom")}
+	h := RegisterHandler{Handler: command.RegisterAccountHandler{Repo: repo, Hasher: stubHasher{}}}
+
+	body, _ := json.Marshal(map[string]string{"email": "a@b.com", "password": sampleCredential})
+	req := httptest.NewRequest(http.MethodPost, "/v1/auth/register", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", rec.Code)
+	}
+}
 ```
 
 Replace `contextType` with `context.Context` and add `"context"` to imports — `contextType` is a placeholder to keep this snippet's diff visible; the actual file must import `context` and use `context.Context` directly in both methods.
@@ -2411,6 +2442,28 @@ func TestLoginHandler_ServeHTTP_InvalidCredentials(t *testing.T) {
 	h := LoginHandler{Handler: command.LoginHandler{Repo: repo, Hasher: stubHasher{}, Issuer: stubIssuer{}}}
 
 	body, _ := json.Marshal(map[string]string{"email": "missing@b.com", "password": sampleCredential})
+	req := httptest.NewRequest(http.MethodPost, "/v1/auth/login", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", rec.Code)
+	}
+}
+
+func TestLoginHandler_ServeHTTP_DisabledAccount(t *testing.T) {
+	repo := &stubAccountRepo{}
+	registerHandler := command.RegisterAccountHandler{Repo: repo, Hasher: stubHasher{}}
+	if _, err := registerHandler.Handle(context.Background(), command.RegisterAccountCommand{Email: "a@b.com", Password: sampleCredential}); err != nil {
+		t.Fatalf("fixture register: %v", err)
+	}
+	if err := repo.saved.Disable(); err != nil {
+		t.Fatalf("fixture Disable: %v", err)
+	}
+
+	h := LoginHandler{Handler: command.LoginHandler{Repo: repo, Hasher: stubHasher{}, Issuer: stubIssuer{}}}
+	body, _ := json.Marshal(map[string]string{"email": "a@b.com", "password": sampleCredential})
 	req := httptest.NewRequest(http.MethodPost, "/v1/auth/login", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 
