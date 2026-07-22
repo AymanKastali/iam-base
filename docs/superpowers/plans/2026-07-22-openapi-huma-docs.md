@@ -200,7 +200,7 @@ git commit -m "feat(httpapi): add huma dependency and RFC 9457 error mapping"
 **Interfaces:**
 - Produces: `func (l *IPRateLimiter) Allow(remoteAddr string) bool` — the IP-extraction + token-bucket check, now the single place both the old-style and Huma middleware call.
 - Produces: `func (l *IPRateLimiter) HumaMiddleware(api huma.API) func(huma.Context, func(huma.Context))` — a factory returning a Huma middleware function. Consumed by Task 8's `router.go`.
-- Removes: `func (l *IPRateLimiter) Middleware(next http.Handler) http.Handler` — dead once `router.go` (Task 8) no longer wraps raw `http.Handler`s. Removed in this task since its only test coverage is being rewritten now; `router.go` still compiles independently until Task 8 because Go doesn't require call sites to exist yet within the same task.
+- Keeps: `func (l *IPRateLimiter) Middleware(next http.Handler) http.Handler` **unchanged in behavior, still present** (rewritten internally to call `Allow`, but its signature and external behavior don't change) — `router.go` still calls it directly (`limiter.Middleware(register)` etc.) until Task 8 rewires the router to use `HumaMiddleware` instead. Do NOT remove `Middleware` or its existing tests in this task — doing so breaks the build immediately (not "until Task 8"; `router.go` calls it right now). Task 8 removes both `Middleware` and its tests once `router.go` no longer calls it.
 
 **Verified facts used below** (via local Huma v2.39.0 spike):
 - `huma.Context` has a `RemoteAddr() string` method that returns the exact same `"ip:port"` string as `http.Request.RemoteAddr` — no need for `humachi.Unwrap`.
@@ -209,15 +209,71 @@ git commit -m "feat(httpapi): add huma dependency and RFC 9457 error mapping"
 
 - [ ] **Step 1: Write the failing test**
 
-Replace the full contents of `internal/infra/httpapi/ratelimit_test.go`:
+Replace the full contents of `internal/infra/httpapi/ratelimit_test.go` (this keeps the two existing `TestIPRateLimiter_Middleware*` tests unchanged — `Middleware` is still live production code, called directly by `router.go`, until Task 8 — and adds the new `Allow`-focused tests alongside them):
 
 ```go
 package httpapi
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 )
+
+func TestIPRateLimiter_Middleware(t *testing.T) {
+	limiter := NewIPRateLimiter(1, 1) // 1 request burst, refills slowly
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	handler := limiter.Middleware(next)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/auth/login", nil)
+	req.RemoteAddr = "1.2.3.4:5555"
+
+	rec1 := httptest.NewRecorder()
+	handler.ServeHTTP(rec1, req)
+	if rec1.Code != http.StatusOK {
+		t.Fatalf("first request status = %d, want 200", rec1.Code)
+	}
+
+	rec2 := httptest.NewRecorder()
+	handler.ServeHTTP(rec2, req)
+	if rec2.Code != http.StatusTooManyRequests {
+		t.Fatalf("second request status = %d, want 429", rec2.Code)
+	}
+}
+
+func TestIPRateLimiter_Middleware_IsolatesByIP(t *testing.T) {
+	limiter := NewIPRateLimiter(1, 1)
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	handler := limiter.Middleware(next)
+
+	reqA := httptest.NewRequest(http.MethodPost, "/v1/auth/login", nil)
+	reqA.RemoteAddr = "1.2.3.4:5555"
+	reqB := httptest.NewRequest(http.MethodPost, "/v1/auth/login", nil)
+	reqB.RemoteAddr = "5.6.7.8:9999"
+
+	recA1 := httptest.NewRecorder()
+	handler.ServeHTTP(recA1, reqA)
+	if recA1.Code != http.StatusOK {
+		t.Fatalf("IP A first request status = %d, want 200", recA1.Code)
+	}
+
+	recA2 := httptest.NewRecorder()
+	handler.ServeHTTP(recA2, reqA)
+	if recA2.Code != http.StatusTooManyRequests {
+		t.Fatalf("IP A second request status = %d, want 429", recA2.Code)
+	}
+
+	recB1 := httptest.NewRecorder()
+	handler.ServeHTTP(recB1, reqB)
+	if recB1.Code != http.StatusOK {
+		t.Fatalf("IP B first request status = %d, want 200 — must not be throttled by IP A's limiter", recB1.Code)
+	}
+}
 
 func TestIPRateLimiter_Allow(t *testing.T) {
 	limiter := NewIPRateLimiter(1, 1) // 1 request burst, refills slowly
@@ -281,11 +337,11 @@ func TestIPRateLimiter_EvictStale(t *testing.T) {
 - [ ] **Step 2: Run the test to verify it fails**
 
 Run: `go test ./internal/infra/httpapi/... -run TestIPRateLimiter -v`
-Expected: FAIL — `limiter.Allow` is undefined (compile error); the old `TestIPRateLimiter_Middleware*` tests are gone so no old failures apply.
+Expected: FAIL — `limiter.Allow` is undefined (compile error). The `TestIPRateLimiter_Middleware*` tests should still pass once compilation succeeds — they test unchanged behavior.
 
 - [ ] **Step 3: Replace `ratelimit.go`**
 
-Replace the full contents of `internal/infra/httpapi/ratelimit.go`:
+Replace the full contents of `internal/infra/httpapi/ratelimit.go` (this keeps `Middleware` — rewritten to call the new `Allow` internally, but with identical external behavior — because `router.go` still calls it directly until Task 8):
 
 ```go
 package httpapi
@@ -385,6 +441,19 @@ func (l *IPRateLimiter) HumaMiddleware(api huma.API) func(huma.Context, func(hum
 		next(ctx)
 	}
 }
+
+// Middleware is the pre-Huma http.Handler wrapper, still called directly by
+// router.go until Task 8 rewires the router onto HumaMiddleware. Kept
+// working, not just kept compiling — router.go depends on its behavior today.
+func (l *IPRateLimiter) Middleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !l.Allow(r.RemoteAddr) {
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
 ```
 
 - [ ] **Step 4: Run the test to verify it passes**
@@ -410,25 +479,13 @@ git commit -m "refactor(httpapi): extract IPRateLimiter.Allow and add a Huma mid
 **Interfaces:**
 - Consumes: `query.GetJWKSHandler.Handle(ctx) (query.JWKSDocument, error)` (unchanged, from `internal/app/query/jwks.go`).
 - Produces: `type JWKSInput struct{}`, `type JWKSOutput struct{ Body query.JWKSDocument }`, `func (h JWKSHandler) Handle(ctx context.Context, input *JWKSInput) (*JWKSOutput, error)`. Consumed by Task 8's `router.go`.
+- Keeps: `func (h JWKSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)` **unchanged, still present** alongside the new `Handle` method. `router.go`'s current signature is `func NewRouter(register, login, refresh, logout, jwks http.Handler, ...)` — every argument must satisfy `http.Handler` until Task 8 rewrites that signature to concrete types. Removing `ServeHTTP` now breaks `composition.go`'s build immediately (it passes `JWKSHandler` into that `http.Handler`-typed parameter). Task 8 removes `ServeHTTP` from every handler once `router.go` calls `.Handle` directly.
 
 - [ ] **Step 1: Write the failing test**
 
-Replace the full contents of `internal/infra/httpapi/jwks_handler_test.go`:
+Add to `internal/infra/httpapi/jwks_handler_test.go` (append — do not remove the existing `TestJWKSHandler_ServeHTTP` test or `stubJWKSPort`; both are still exercising live production code):
 
 ```go
-package httpapi
-
-import (
-	"context"
-	"testing"
-
-	"github.com/AymanKastali/iam-base/internal/app/query"
-)
-
-type stubJWKSPort struct{ doc query.JWKSDocument }
-
-func (s stubJWKSPort) JWKS() query.JWKSDocument { return s.doc }
-
 func TestJWKSHandler_Handle(t *testing.T) {
 	doc := query.JWKSDocument{Keys: []query.JWKSKey{{Kty: "RSA", Kid: "1", Alg: "RS256", Use: "sig", N: "n", E: "e"}}}
 	h := JWKSHandler{Handler: query.GetJWKSHandler{Port: stubJWKSPort{doc: doc}}}
@@ -444,28 +501,18 @@ func TestJWKSHandler_Handle(t *testing.T) {
 }
 ```
 
+The existing `context` import is already unused by the old test (it does `_ = context.Background()` as a no-op) — the new test gives it real use; no import changes needed.
+
 - [ ] **Step 2: Run the test to verify it fails**
 
 Run: `go test ./internal/infra/httpapi/... -run TestJWKSHandler -v`
-Expected: FAIL — `JWKSInput`/`JWKSOutput` undefined (compile error).
+Expected: FAIL — `JWKSInput`/`JWKSOutput` undefined (compile error). `TestJWKSHandler_ServeHTTP` is unaffected and should still be passing once compilation succeeds.
 
-- [ ] **Step 3: Replace `jwks_handler.go`**
+- [ ] **Step 3: Add to `jwks_handler.go`**
 
-Replace the full contents of `internal/infra/httpapi/jwks_handler.go`:
+Add the following to `internal/infra/httpapi/jwks_handler.go`, below the existing `ServeHTTP` method — do not remove or modify `ServeHTTP`:
 
 ```go
-package httpapi
-
-import (
-	"context"
-
-	"github.com/AymanKastali/iam-base/internal/app/query"
-)
-
-type JWKSHandler struct {
-	Handler query.GetJWKSHandler
-}
-
 type JWKSInput struct{}
 
 type JWKSOutput struct {
@@ -481,10 +528,12 @@ func (h JWKSHandler) Handle(ctx context.Context, input *JWKSInput) (*JWKSOutput,
 }
 ```
 
+Add `"context"` to the existing `import` block (alongside the existing `"net/http"`).
+
 - [ ] **Step 4: Run the test to verify it passes**
 
-Run: `go test ./internal/infra/httpapi/... -run TestJWKSHandler -v`
-Expected: PASS
+Run: `go test ./internal/infra/httpapi/... -v`
+Expected: PASS — both `TestJWKSHandler_ServeHTTP` and `TestJWKSHandler_Handle`.
 
 - [ ] **Step 5: Commit**
 
@@ -503,72 +552,15 @@ git commit -m "feat(httpapi): convert JWKS handler to a Huma operation"
 
 **Interfaces:**
 - Consumes: `command.RegisterAccountHandler.Handle(ctx, command.RegisterAccountCommand{Email, Password string}) (domain.AccountID, error)` (unchanged).
-- Produces: `type RegisterInput struct{ Body struct{ Email, Password string } }`, `type RegisterOutput struct{ Body struct{ ID string } }`, `func (h RegisterHandler) Handle(ctx context.Context, input *RegisterInput) (*RegisterOutput, error)`. Consumed by Task 8's `router.go`.
-- Note: the `BodyTooLarge` scenario moves to Task 8's `router_test.go` — Huma enforces `MaxBodyBytes` in the transport adapter, before `Handle` is ever called, so it cannot be exercised by calling `Handle` directly.
+- Produces: `type RegisterInput struct{ Body struct{ Email, Password string } }`, `type RegisterOutput struct{ Body struct{ ID string } }`, `func (h RegisterHandler) Handle(ctx context.Context, input *RegisterInput) (*RegisterOutput, error)`. Consumed by Task 8's `router.go`. Also produces `assertStatus(t, err, want int)`, a shared test helper — Tasks 5 and 6 call it too.
+- Keeps: `func (h RegisterHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)` **unchanged, still present**, plus the existing `stubAccountRepo`, `stubHasher`, `stubIDGenerator`, `sampleCredential`, and all six `TestRegisterHandler_ServeHTTP_*` tests in the test file — unchanged. Same reason as Task 3: `router.go`'s current signature requires every handler to keep satisfying `http.Handler` until Task 8. Do not remove `ServeHTTP` or its tests in this task.
+- Note: the `BodyTooLarge` scenario for the *new* `Handle`-based path moves to Task 8's `router_test.go` — Huma enforces `MaxBodyBytes` in the transport adapter, before `Handle` is ever called. The *old* `TestRegisterHandler_ServeHTTP_BodyTooLarge` test stays exactly where it is; it's still testing live code.
 
 - [ ] **Step 1: Write the failing test**
 
-Replace the full contents of `internal/infra/httpapi/register_handler_test.go`:
+Add to `internal/infra/httpapi/register_handler_test.go` (append below the existing six `TestRegisterHandler_ServeHTTP_*` tests — do not remove or modify any existing code in this file; add `"github.com/danielgtaylor/huma/v2"` to the existing import block):
 
 ```go
-package httpapi
-
-import (
-	"context"
-	"errors"
-	"net/http"
-	"testing"
-
-	"github.com/danielgtaylor/huma/v2"
-
-	"github.com/AymanKastali/iam-base/internal/app/command"
-	"github.com/AymanKastali/iam-base/internal/domain"
-)
-
-// sampleCredential is a fixture value, not a secret — named so it never reads
-// like a hardcoded credential in a struct literal or JSON body.
-const sampleCredential = "secret123"
-
-type stubAccountRepo struct {
-	saved   *domain.Account
-	saveErr error
-}
-
-func (r *stubAccountRepo) Save(ctx context.Context, a *domain.Account) error {
-	if r.saveErr != nil {
-		return r.saveErr
-	}
-	r.saved = a
-	return nil
-}
-
-func (r *stubAccountRepo) FindByEmail(ctx context.Context, e domain.Email) (*domain.Account, error) {
-	if r.saved != nil && r.saved.Email() == e {
-		return r.saved, nil
-	}
-	return nil, domain.ErrAccountNotFound
-}
-
-type stubHasher struct{}
-
-func (stubHasher) Hash(password string) (domain.Credential, error) {
-	return domain.NewCredential("hashed:"+password, "argon2id", 1)
-}
-
-func (stubHasher) Verify(c domain.Credential, password string) (bool, error) {
-	return c.Hash() == "hashed:"+password, nil
-}
-
-type stubIDGenerator struct{}
-
-func (stubIDGenerator) NewAccountID() (domain.AccountID, error) {
-	return domain.NewAccountID("stub-account-id")
-}
-
-func (stubIDGenerator) NewFamilyID() (domain.FamilyID, error) {
-	return domain.NewFamilyID("stub-family-id")
-}
-
 func newRegisterInput(email, password string) *RegisterInput {
 	input := &RegisterInput{}
 	input.Body.Email = email
@@ -646,25 +638,13 @@ func assertStatus(t *testing.T, err error, want int) {
 - [ ] **Step 2: Run the test to verify it fails**
 
 Run: `go test ./internal/infra/httpapi/... -run TestRegisterHandler -v`
-Expected: FAIL — `RegisterInput`/`RegisterOutput` undefined (compile error).
+Expected: FAIL — `RegisterInput`/`RegisterOutput` undefined (compile error). The existing `TestRegisterHandler_ServeHTTP_*` tests are unaffected and should still pass once compilation succeeds.
 
-- [ ] **Step 3: Replace `register_handler.go`**
+- [ ] **Step 3: Add to `register_handler.go`**
 
-Replace the full contents of `internal/infra/httpapi/register_handler.go`:
+Add the following to `internal/infra/httpapi/register_handler.go`, below the existing `ServeHTTP` method and `registerRequest` type — do not remove or modify either. Add `"context"` to the existing import block (alongside `"net/http"`):
 
 ```go
-package httpapi
-
-import (
-	"context"
-
-	"github.com/AymanKastali/iam-base/internal/app/command"
-)
-
-type RegisterHandler struct {
-	Handler command.RegisterAccountHandler
-}
-
 type RegisterInput struct {
 	Body struct {
 		Email    string `json:"email" required:"true" format:"email"`
@@ -692,7 +672,7 @@ func (h RegisterHandler) Handle(ctx context.Context, input *RegisterInput) (*Reg
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `go test ./internal/infra/httpapi/... -run TestRegisterHandler -v`
-Expected: PASS
+Expected: PASS — both the `ServeHTTP` and `Handle` tests.
 
 - [ ] **Step 5: Commit**
 
@@ -711,31 +691,14 @@ git commit -m "feat(httpapi): convert register handler to a Huma operation"
 
 **Interfaces:**
 - Consumes: `command.LoginHandler.Handle(ctx, command.LoginCommand{Email, Password string}) (command.LoginResult{AccessToken, ExpiresAt time.Time, RefreshToken string}, error)` (unchanged). Consumes `assertStatus` from Task 4.
-- Produces: `type LoginInput struct{ Body struct{ Email, Password string } }`, `type LoginOutput struct{ Body struct{ AccessToken, TokenType, ExpiresAt, RefreshToken string } }`, `func (h LoginHandler) Handle(ctx context.Context, input *LoginInput) (*LoginOutput, error)`. Consumed by Task 8's `router.go`.
+- Produces: `type LoginInput struct{ Body struct{ Email, Password string } }`, `type LoginOutput struct{ Body struct{ AccessToken, TokenType, ExpiresAt, RefreshToken string } }`, `func (h LoginHandler) Handle(ctx context.Context, input *LoginInput) (*LoginOutput, error)`. Consumed by Task 8's `router.go`. Also keeps producing `stubIssuer` (unchanged) — Task 6 consumes it too.
+- Keeps: `func (h LoginHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)`, `loginRequest`, `loginResponse`, `stubIssuer`, and all four existing `TestLoginHandler_ServeHTTP_*` tests **unchanged, still present** — same reason as Tasks 3-4: `router.go`'s current signature requires every handler to keep satisfying `http.Handler` until Task 8.
 
 - [ ] **Step 1: Write the failing test**
 
-Replace the full contents of `internal/infra/httpapi/login_handler_test.go`:
+Add to `internal/infra/httpapi/login_handler_test.go` (append below the existing four `TestLoginHandler_ServeHTTP_*` tests and the existing `stubIssuer` — do not redeclare `stubIssuer`, do not remove or modify any existing code in this file):
 
 ```go
-package httpapi
-
-import (
-	"context"
-	"net/http"
-	"testing"
-	"time"
-
-	"github.com/AymanKastali/iam-base/internal/app/command"
-	"github.com/AymanKastali/iam-base/internal/domain"
-)
-
-type stubIssuer struct{}
-
-func (stubIssuer) Issue(ctx context.Context, id domain.AccountID) (string, time.Time, error) {
-	return "signed-jwt", time.Now().Add(15 * time.Minute), nil
-}
-
 func newLoginInput(email, password string) *LoginInput {
 	input := &LoginInput{}
 	input.Body.Email = email
@@ -822,26 +785,13 @@ func TestLoginHandler_Handle_DisabledAccount(t *testing.T) {
 - [ ] **Step 2: Run the test to verify it fails**
 
 Run: `go test ./internal/infra/httpapi/... -run TestLoginHandler -v`
-Expected: FAIL — `LoginInput`/`LoginOutput` undefined (compile error).
+Expected: FAIL — `LoginInput`/`LoginOutput` undefined (compile error). The existing `TestLoginHandler_ServeHTTP_*` tests are unaffected and should still pass once compilation succeeds.
 
-- [ ] **Step 3: Replace `login_handler.go`**
+- [ ] **Step 3: Add to `login_handler.go`**
 
-Replace the full contents of `internal/infra/httpapi/login_handler.go`:
+Add the following to `internal/infra/httpapi/login_handler.go`, below the existing `ServeHTTP` method, `loginRequest`, and `loginResponse` types — do not remove or modify any of them. Add `"context"` to the existing import block (alongside `"net/http"`):
 
 ```go
-package httpapi
-
-import (
-	"context"
-	"net/http"
-
-	"github.com/AymanKastali/iam-base/internal/app/command"
-)
-
-type LoginHandler struct {
-	Handler command.LoginHandler
-}
-
 type LoginInput struct {
 	Body struct {
 		Email    string `json:"email" required:"true" format:"email"`
@@ -875,7 +825,7 @@ func (h LoginHandler) Handle(ctx context.Context, input *LoginInput) (*LoginOutp
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `go test ./internal/infra/httpapi/... -run TestLoginHandler -v`
-Expected: PASS
+Expected: PASS — both the `ServeHTTP` and `Handle` tests.
 
 - [ ] **Step 5: Commit**
 
@@ -895,68 +845,13 @@ git commit -m "feat(httpapi): convert login handler to a Huma operation"
 **Interfaces:**
 - Consumes: `command.RotateRefreshTokenHandler.Handle(ctx, command.RotateRefreshTokenCommand{RefreshToken string}) (command.RefreshResult{AccessToken, RefreshToken string, AccessTokenExpiresAt time.Time}, error)` (unchanged). Consumes `assertStatus` from Task 4, `stubIssuer` from Task 5.
 - Produces: `type RefreshInput struct{ Body struct{ RefreshToken string } }`, `type RefreshOutput struct{ Body struct{ AccessToken, TokenType, ExpiresAt, RefreshToken string } }`, `func (h RefreshHandler) Handle(ctx context.Context, input *RefreshInput) (*RefreshOutput, error)`. Consumed by Task 8's `router.go`.
-- Also keeps producing (unchanged, still needed by Tasks 5/7/8's tests): `stubRefreshTokenRepo`/`newStubRefreshTokenRepo()`, `stubTokenGenerator`, `stubClock`.
+- Keeps: `func (h RefreshHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)`, `refreshRequest`, `refreshResponse`, `stubRefreshTokenRepo`/`newStubRefreshTokenRepo()`, `stubTokenGenerator`, `stubClock`, and all three existing `TestRefreshHandler_ServeHTTP_*` tests **unchanged, still present** — same reason as Tasks 3-5: `router.go`'s current signature requires every handler to keep satisfying `http.Handler` until Task 8. These stubs are also still needed by Task 5's tests (already relying on them, since they predate this plan).
 
 - [ ] **Step 1: Write the failing test**
 
-Replace the full contents of `internal/infra/httpapi/refresh_handler_test.go`:
+Add to `internal/infra/httpapi/refresh_handler_test.go` (append below the existing three `TestRefreshHandler_ServeHTTP_*` tests and the existing `stubRefreshTokenRepo`/`stubTokenGenerator`/`stubClock` declarations — do not redeclare any of them, do not remove or modify any existing code in this file):
 
 ```go
-// internal/infra/httpapi/refresh_handler_test.go
-package httpapi
-
-import (
-	"context"
-	"net/http"
-	"testing"
-	"time"
-
-	"github.com/AymanKastali/iam-base/internal/app/command"
-	"github.com/AymanKastali/iam-base/internal/domain"
-)
-
-type stubRefreshTokenRepo struct {
-	families map[string]*domain.RefreshTokenFamily
-}
-
-func newStubRefreshTokenRepo() *stubRefreshTokenRepo {
-	return &stubRefreshTokenRepo{families: map[string]*domain.RefreshTokenFamily{}}
-}
-
-func (r *stubRefreshTokenRepo) Save(ctx context.Context, family *domain.RefreshTokenFamily) error {
-	r.families[family.ID().String()] = family
-	return nil
-}
-
-func (r *stubRefreshTokenRepo) FindByID(ctx context.Context, id domain.FamilyID) (*domain.RefreshTokenFamily, error) {
-	family, ok := r.families[id.String()]
-	if !ok {
-		return nil, domain.ErrRefreshTokenFamilyNotFound
-	}
-	return family, nil
-}
-
-type stubTokenGenerator struct {
-	nextSecret string
-	nextHash   string
-}
-
-func (g stubTokenGenerator) Generate() (string, string, error) {
-	return g.nextSecret, g.nextHash, nil
-}
-
-func (stubTokenGenerator) Hash(raw string) string {
-	return "hash:" + raw
-}
-
-type stubClock struct {
-	now time.Time
-}
-
-func (c stubClock) Now() time.Time {
-	return c.now
-}
-
 func newRefreshInput(refreshToken string) *RefreshInput {
 	input := &RefreshInput{}
 	input.Body.RefreshToken = refreshToken
@@ -1007,27 +902,13 @@ func TestRefreshHandler_Handle_InvalidRefreshToken(t *testing.T) {
 - [ ] **Step 2: Run the test to verify it fails**
 
 Run: `go test ./internal/infra/httpapi/... -run TestRefreshHandler -v`
-Expected: FAIL — `RefreshInput`/`RefreshOutput` undefined (compile error).
+Expected: FAIL — `RefreshInput`/`RefreshOutput` undefined (compile error). The existing `TestRefreshHandler_ServeHTTP_*` tests are unaffected and should still pass once compilation succeeds.
 
-- [ ] **Step 3: Replace `refresh_handler.go`**
+- [ ] **Step 3: Add to `refresh_handler.go`**
 
-Replace the full contents of `internal/infra/httpapi/refresh_handler.go`:
+Add the following to `internal/infra/httpapi/refresh_handler.go`, below the existing `ServeHTTP` method, `refreshRequest`, and `refreshResponse` types — do not remove or modify any of them. Add `"context"` to the existing import block (alongside `"net/http"`):
 
 ```go
-// internal/infra/httpapi/refresh_handler.go
-package httpapi
-
-import (
-	"context"
-	"net/http"
-
-	"github.com/AymanKastali/iam-base/internal/app/command"
-)
-
-type RefreshHandler struct {
-	Handler command.RotateRefreshTokenHandler
-}
-
 type RefreshInput struct {
 	Body struct {
 		RefreshToken string `json:"refresh_token" required:"true"`
@@ -1060,7 +941,7 @@ func (h RefreshHandler) Handle(ctx context.Context, input *RefreshInput) (*Refre
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `go test ./internal/infra/httpapi/... -run TestRefreshHandler -v`
-Expected: PASS
+Expected: PASS — both the `ServeHTTP` and `Handle` tests.
 
 - [ ] **Step 5: Commit**
 
@@ -1080,24 +961,13 @@ git commit -m "feat(httpapi): convert refresh handler to a Huma operation"
 **Interfaces:**
 - Consumes: `command.RevokeSessionHandler.Handle(ctx, command.RevokeSessionCommand{RefreshToken string}) error` (unchanged). Consumes `newStubRefreshTokenRepo()` from Task 6.
 - Produces: `type LogoutInput struct{ Body struct{ RefreshToken string } }`, `type LogoutOutput struct{}` (no `Body` field — an empty response), `func (h LogoutHandler) Handle(ctx context.Context, input *LogoutInput) (*LogoutOutput, error)`. Consumed by Task 8's `router.go`.
+- Keeps: `func (h LogoutHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)`, `logoutRequest`, and all three existing `TestLogoutHandler_ServeHTTP_*` tests **unchanged, still present** — same reason as Tasks 3-6: `router.go`'s current signature requires every handler to keep satisfying `http.Handler` until Task 8.
 
 - [ ] **Step 1: Write the failing test**
 
-Replace the full contents of `internal/infra/httpapi/logout_handler_test.go`:
+Add to `internal/infra/httpapi/logout_handler_test.go` (append below the existing three `TestLogoutHandler_ServeHTTP_*` tests — do not remove or modify any existing code in this file):
 
 ```go
-// internal/infra/httpapi/logout_handler_test.go
-package httpapi
-
-import (
-	"context"
-	"testing"
-	"time"
-
-	"github.com/AymanKastali/iam-base/internal/app/command"
-	"github.com/AymanKastali/iam-base/internal/domain"
-)
-
 func newLogoutInput(refreshToken string) *LogoutInput {
 	input := &LogoutInput{}
 	input.Body.RefreshToken = refreshToken
@@ -1141,26 +1011,13 @@ func TestLogoutHandler_Handle_UnknownFamily_StillSucceeds(t *testing.T) {
 - [ ] **Step 2: Run the test to verify it fails**
 
 Run: `go test ./internal/infra/httpapi/... -run TestLogoutHandler -v`
-Expected: FAIL — `LogoutInput`/`LogoutOutput` undefined (compile error).
+Expected: FAIL — `LogoutInput`/`LogoutOutput` undefined (compile error). The existing `TestLogoutHandler_ServeHTTP_*` tests are unaffected and should still pass once compilation succeeds.
 
-- [ ] **Step 3: Replace `logout_handler.go`**
+- [ ] **Step 3: Add to `logout_handler.go`**
 
-Replace the full contents of `internal/infra/httpapi/logout_handler.go`:
+Add the following to `internal/infra/httpapi/logout_handler.go`, below the existing `ServeHTTP` method and `logoutRequest` type — do not remove or modify either. Add `"context"` to the existing import block (alongside `"net/http"`):
 
 ```go
-// internal/infra/httpapi/logout_handler.go
-package httpapi
-
-import (
-	"context"
-
-	"github.com/AymanKastali/iam-base/internal/app/command"
-)
-
-type LogoutHandler struct {
-	Handler command.RevokeSessionHandler
-}
-
 type LogoutInput struct {
 	Body struct {
 		RefreshToken string `json:"refresh_token" required:"true"`
@@ -1180,7 +1037,7 @@ func (h LogoutHandler) Handle(ctx context.Context, input *LogoutInput) (*LogoutO
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `go test ./internal/infra/httpapi/... -run TestLogoutHandler -v`
-Expected: PASS
+Expected: PASS — both the `ServeHTTP` and `Handle` tests.
 
 - [ ] **Step 5: Commit**
 
@@ -1196,11 +1053,20 @@ git commit -m "feat(httpapi): convert logout handler to a Huma operation"
 **Files:**
 - Modify: `internal/infra/httpapi/router.go`
 - Modify: `internal/infra/httpapi/errors.go`
+- Modify: `internal/infra/httpapi/ratelimit.go`
+- Modify: `internal/infra/httpapi/ratelimit_test.go`
+- Modify: `internal/infra/httpapi/register_handler.go`, `register_handler_test.go`
+- Modify: `internal/infra/httpapi/login_handler.go`, `login_handler_test.go`
+- Modify: `internal/infra/httpapi/refresh_handler.go`, `refresh_handler_test.go`
+- Modify: `internal/infra/httpapi/logout_handler.go`, `logout_handler_test.go`
+- Modify: `internal/infra/httpapi/jwks_handler.go`, `jwks_handler_test.go`
 - Delete: `internal/infra/httpapi/response.go`
 - Create: `internal/infra/httpapi/router_test.go`
 
 **Interfaces:**
 - Consumes: `RegisterHandler.Handle`, `LoginHandler.Handle`, `RefreshHandler.Handle`, `LogoutHandler.Handle`, `JWKSHandler.Handle` (Tasks 3–7), `IPRateLimiter.HumaMiddleware` (Task 2).
+- Removes: `IPRateLimiter.Middleware` (Task 2 kept it working because `router.go` called it directly; this task's `router.go` rewrite is what finally removes that call site, so `Middleware` and its two tests — `TestIPRateLimiter_Middleware`, `TestIPRateLimiter_Middleware_IsolatesByIP` — become dead and must be deleted here, not left behind).
+- Removes: `ServeHTTP` from all five handler structs (`RegisterHandler`, `LoginHandler`, `RefreshHandler`, `LogoutHandler`, `JWKSHandler`), plus their now-dead request/response DTOs (`registerRequest`, `loginRequest`/`loginResponse`, `refreshRequest`/`refreshResponse`, `logoutRequest`) and every old `Test*Handler_ServeHTTP_*` test. Tasks 3-7 deliberately kept these alive because `router.go`'s old signature (`func NewRouter(register, login, refresh, logout, jwks http.Handler, ...)`) required every handler to satisfy `http.Handler`. This task's `router.go` rewrite (Step 3) is the one point where that requirement goes away — `NewRouter` now takes concrete handler types and calls `.Handle` directly via `huma.Register`, so nothing calls `.ServeHTTP()` on any handler anymore, anywhere in the module.
 - Produces: `func NewRouter(register RegisterHandler, login LoginHandler, refresh RefreshHandler, logout LogoutHandler, jwks JWKSHandler, limiter *IPRateLimiter) http.Handler` — same call signature/argument order `composition.Build` already uses, so **no change needed there**. Also produces the package-level `const maxRequestBodyBytes = 1 << 16` (moved here from the deleted `response.go`), consumed by every `Operation.MaxBodyBytes` field above and by this task's own test.
 
 **Verified facts used below** (via local Huma v2.39.0 spike):
@@ -1303,7 +1169,7 @@ func TestNewRouter_ServesOpenAPIAndDocs(t *testing.T) {
 - [ ] **Step 2: Run the tests to verify they fail**
 
 Run: `go test ./internal/infra/httpapi/... -run TestNewRouter -v`
-Expected: FAIL — `NewRouter`'s current signature takes `http.Handler` params and returns `*chi.Mux`; passing concrete handler structs is a compile error until Step 3.
+Expected: this compiles fine (every handler still implements `ServeHTTP` from Tasks 3-7, so they still satisfy `NewRouter`'s current `http.Handler`-typed parameters), but at least two subtests FAIL against real behavior: `TestNewRouter_ServesOpenAPIAndDocs` gets 404 (the old router has no `/docs` or `/openapi.json` routes), and `TestNewRouter_RejectsOversizedBody` gets 400 instead of 413 (the old body-size cap goes through `decodeJSON`/`writeError`, not Huma). `TestNewRouter_RateLimitsAuthEndpoints` may already pass — the old router's rate limiting is equivalent to the new one; that's fine, TDD doesn't require every new test to be red before the fix, only that the ones testing genuinely new behavior are.
 
 - [ ] **Step 3: Replace `router.go`**
 
@@ -1390,7 +1256,24 @@ func NewRouter(register RegisterHandler, login LoginHandler, refresh RefreshHand
 }
 ```
 
-- [ ] **Step 4: Trim `errors.go` and delete `response.go`**
+- [ ] **Step 4: Remove `ServeHTTP` and its dead DTOs from all five handler files**
+
+`router.go` (Step 3, above) no longer references any handler as an `http.Handler` — it calls `register.Handle`, `login.Handle`, `refresh.Handle`, `logout.Handle`, `jwks.Handle` directly. This is the first point in the whole plan where `ServeHTTP` is truly dead on every handler, not just temporarily kept. Remove, in each file:
+
+- `internal/infra/httpapi/register_handler.go`: delete the `ServeHTTP` method and the `registerRequest` type. Keep `RegisterHandler`, `RegisterInput`, `RegisterOutput`, `Handle`.
+- `internal/infra/httpapi/register_handler_test.go`: delete `TestRegisterHandler_ServeHTTP_Success`, `_DuplicateEmail`, `_InvalidEmail`, `_PasswordTooShort`, `_BodyTooLarge`, `_UnexpectedError`. Keep `stubAccountRepo`, `stubHasher`, `stubIDGenerator`, `sampleCredential` (Tasks 5-7's tests still use them), `newRegisterInput`, `assertStatus`, and the `TestRegisterHandler_Handle_*` tests.
+- `internal/infra/httpapi/login_handler.go`: delete the `ServeHTTP` method, `loginRequest`, and `loginResponse`. Keep `LoginHandler`, `LoginInput`, `LoginOutput`, `Handle`.
+- `internal/infra/httpapi/login_handler_test.go`: delete `TestLoginHandler_ServeHTTP_Success`, `_InvalidCredentials`, `_BodyTooLarge`, `_DisabledAccount`. Keep `stubIssuer` (Task 6's tests still use it), `newLoginInput`, and the `TestLoginHandler_Handle_*` tests.
+- `internal/infra/httpapi/refresh_handler.go`: delete the `ServeHTTP` method, `refreshRequest`, and `refreshResponse`. Keep `RefreshHandler`, `RefreshInput`, `RefreshOutput`, `Handle`.
+- `internal/infra/httpapi/refresh_handler_test.go`: delete `TestRefreshHandler_ServeHTTP_Success`, `_InvalidRefreshToken`, `_BodyTooLarge`. Keep `stubRefreshTokenRepo`/`newStubRefreshTokenRepo()`, `stubTokenGenerator`, `stubClock` (Task 5's, Task 7's, and this task's own `router_test.go` still use them), `newRefreshInput`, and the `TestRefreshHandler_Handle_*` tests.
+- `internal/infra/httpapi/logout_handler.go`: delete the `ServeHTTP` method and `logoutRequest`. Keep `LogoutHandler`, `LogoutInput`, `LogoutOutput`, `Handle`.
+- `internal/infra/httpapi/logout_handler_test.go`: delete `TestLogoutHandler_ServeHTTP_Success`, `_UnknownFamily_StillNoContent`, `_BodyTooLarge`. Keep `newLogoutInput` and the `TestLogoutHandler_Handle_*` tests.
+- `internal/infra/httpapi/jwks_handler.go`: delete the `ServeHTTP` method. Keep `JWKSHandler`, `JWKSInput`, `JWKSOutput`, `Handle`.
+- `internal/infra/httpapi/jwks_handler_test.go`: delete `TestJWKSHandler_ServeHTTP`. Keep `stubJWKSPort` and `TestJWKSHandler_Handle`.
+
+After each file, run `go build ./internal/infra/httpapi/...` and delete any import that's now unused (e.g. `"net/http"` in `logout_handler.go`, `"bytes"`/`"encoding/json"`/`"net/http/httptest"`/`"strings"` in the test files) — the compiler names every one, so fix them as reported rather than guessing which imports survive.
+
+- [ ] **Step 5: Trim `errors.go` and delete `response.go`**
 
 By this point (Tasks 3–7 done), no handler calls `respondError` anymore — it and `response.go`'s `writeError`/`writeJSON`/`decodeJSON`/`errorResponse`/`errorBody` are now dead. Remove them together, since `respondError` depends on `writeError`.
 
@@ -1448,12 +1331,30 @@ func statusForKind(k app.Kind) int {
 Run: `git rm internal/infra/httpapi/response.go`
 Expected: `decodeJSON`, `writeJSON`, `writeError`, `errorResponse`, `errorBody` are gone — nothing references them anymore after this step.
 
-- [ ] **Step 5: Run the tests to verify they pass**
+- [ ] **Step 6: Remove the now-dead `IPRateLimiter.Middleware` and its tests**
+
+`router.go` (Step 3, above) now calls `limiter.HumaMiddleware(api)` instead of `limiter.Middleware(...)` — `Middleware` has no remaining call site anywhere in the module. Remove it from `internal/infra/httpapi/ratelimit.go`: delete the whole method —
+
+```go
+func (l *IPRateLimiter) Middleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !l.Allow(r.RemoteAddr) {
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+```
+
+— and its two dedicated tests from `internal/infra/httpapi/ratelimit_test.go`: delete `TestIPRateLimiter_Middleware` and `TestIPRateLimiter_Middleware_IsolatesByIP` in full (the equivalent behavior — burst exhaustion and per-IP isolation — stays covered by `TestIPRateLimiter_Allow` and `TestIPRateLimiter_Allow_IsolatesByIP` from Task 2, and by this task's own `TestNewRouter_RateLimitsAuthEndpoints` at the wiring level). After deleting the two tests, `net/http` and `net/http/httptest` may become unused imports in `ratelimit_test.go` — remove them if so; leave `"testing"` and `"time"`.
+
+- [ ] **Step 7: Run the tests to verify they pass**
 
 Run: `go test ./internal/infra/httpapi/... -v`
 Expected: PASS — every test in the package, including all of Tasks 1–8's. (Task 1's `errors_test.go` still passes unchanged — it only ever tested `mapAppError`, never `respondError`.)
 
-- [ ] **Step 6: Run the full test suite and static checks**
+- [ ] **Step 8: Run the full test suite and static checks**
 
 Run: `go build ./...`
 Expected: builds cleanly (confirms `composition.go`/`main.go` needed no changes).
@@ -1467,10 +1368,10 @@ Expected: no output (nothing unformatted).
 Run: `golangci-lint run`
 Expected: no findings.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 9: Commit**
 
 ```bash
-git add internal/infra/httpapi/router.go internal/infra/httpapi/router_test.go internal/infra/httpapi/errors.go
+git add internal/infra/httpapi/router.go internal/infra/httpapi/router_test.go internal/infra/httpapi/errors.go internal/infra/httpapi/ratelimit.go internal/infra/httpapi/ratelimit_test.go internal/infra/httpapi/register_handler.go internal/infra/httpapi/register_handler_test.go internal/infra/httpapi/login_handler.go internal/infra/httpapi/login_handler_test.go internal/infra/httpapi/refresh_handler.go internal/infra/httpapi/refresh_handler_test.go internal/infra/httpapi/logout_handler.go internal/infra/httpapi/logout_handler_test.go internal/infra/httpapi/jwks_handler.go internal/infra/httpapi/jwks_handler_test.go
 git rm internal/infra/httpapi/response.go
 git commit -m "feat(httpapi): wire a Huma-backed router exposing OpenAPI docs at /docs"
 ```
