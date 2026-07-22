@@ -1,0 +1,13 @@
+# Never send secrets or generated keys into the build context.
+deployments/keys/
+
+# Not needed inside the image.
+.git/
+.superpowers/
+docs/
+*.md
+
+# Go build artifacts
+/bin/
+*.test
+*.out
