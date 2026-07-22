@@ -2,7 +2,7 @@
 package httpapi
 
 import (
-	"net/http"
+	"context"
 
 	"github.com/AymanKastali/iam-base/internal/app/command"
 )
@@ -11,21 +11,17 @@ type LogoutHandler struct {
 	Handler command.RevokeSessionHandler
 }
 
-type logoutRequest struct {
-	RefreshToken string `json:"refresh_token"`
+type LogoutInput struct {
+	Body struct {
+		RefreshToken string `json:"refresh_token" required:"true"`
+	}
 }
 
-func (h LogoutHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	var req logoutRequest
-	if err := decodeJSON(w, r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request_body", "invalid request body")
-		return
-	}
+type LogoutOutput struct{}
 
-	if err := h.Handler.Handle(r.Context(), command.RevokeSessionCommand{RefreshToken: req.RefreshToken}); err != nil {
-		respondError(w, "logout", err)
-		return
+func (h LogoutHandler) Handle(ctx context.Context, input *LogoutInput) (*LogoutOutput, error) {
+	if err := h.Handler.Handle(ctx, command.RevokeSessionCommand{RefreshToken: input.Body.RefreshToken}); err != nil {
+		return nil, mapAppError("logout", err)
 	}
-
-	w.WriteHeader(http.StatusNoContent)
+	return &LogoutOutput{}, nil
 }

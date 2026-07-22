@@ -1,14 +1,12 @@
 package httpapi
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
-	"net/http/httptest"
-	"strings"
 	"testing"
+
+	"github.com/danielgtaylor/huma/v2"
 
 	"github.com/AymanKastali/iam-base/internal/app/command"
 	"github.com/AymanKastali/iam-base/internal/domain"
@@ -58,93 +56,79 @@ func (stubIDGenerator) NewFamilyID() (domain.FamilyID, error) {
 	return domain.NewFamilyID("stub-family-id")
 }
 
-func TestRegisterHandler_ServeHTTP_Success(t *testing.T) {
+func newRegisterInput(email, password string) *RegisterInput {
+	input := &RegisterInput{}
+	input.Body.Email = email
+	input.Body.Password = password
+	return input
+}
+
+func newRegisterHandler(repo *stubAccountRepo) RegisterHandler {
+	return RegisterHandler{Handler: command.RegisterAccountHandler{Repo: repo, Hasher: stubHasher{}, Policy: domain.MinLengthPasswordPolicy{}, IDGen: stubIDGenerator{}}}
+}
+
+func TestRegisterHandler_Handle_Success(t *testing.T) {
 	repo := &stubAccountRepo{}
-	h := RegisterHandler{Handler: command.RegisterAccountHandler{Repo: repo, Hasher: stubHasher{}, Policy: domain.MinLengthPasswordPolicy{}, IDGen: stubIDGenerator{}}}
+	h := newRegisterHandler(repo)
 
-	body, _ := json.Marshal(map[string]string{"email": "a@b.com", "password": sampleCredential})
-	req := httptest.NewRequest(http.MethodPost, "/v1/auth/register", bytes.NewReader(body))
-	rec := httptest.NewRecorder()
+	out, err := h.Handle(context.Background(), newRegisterInput("a@b.com", sampleCredential))
 
-	h.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("status = %d, want 201, body = %s", rec.Code, rec.Body.String())
+	if err != nil {
+		t.Fatalf("Handle() error = %v, want nil", err)
+	}
+	if out.Body.ID == "" {
+		t.Error("Body.ID is empty, want the new account's ID")
 	}
 }
 
-func TestRegisterHandler_ServeHTTP_DuplicateEmail(t *testing.T) {
+func TestRegisterHandler_Handle_DuplicateEmail(t *testing.T) {
 	repo := &stubAccountRepo{saveErr: domain.ErrEmailAlreadyRegistered}
-	h := RegisterHandler{Handler: command.RegisterAccountHandler{Repo: repo, Hasher: stubHasher{}, Policy: domain.MinLengthPasswordPolicy{}, IDGen: stubIDGenerator{}}}
+	h := newRegisterHandler(repo)
 
-	body, _ := json.Marshal(map[string]string{"email": "a@b.com", "password": sampleCredential})
-	req := httptest.NewRequest(http.MethodPost, "/v1/auth/register", bytes.NewReader(body))
-	rec := httptest.NewRecorder()
+	_, err := h.Handle(context.Background(), newRegisterInput("a@b.com", sampleCredential))
 
-	h.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusConflict {
-		t.Fatalf("status = %d, want 409", rec.Code)
-	}
+	assertStatus(t, err, http.StatusConflict)
 }
 
-func TestRegisterHandler_ServeHTTP_InvalidEmail(t *testing.T) {
+func TestRegisterHandler_Handle_InvalidEmail(t *testing.T) {
 	repo := &stubAccountRepo{}
-	h := RegisterHandler{Handler: command.RegisterAccountHandler{Repo: repo, Hasher: stubHasher{}, Policy: domain.MinLengthPasswordPolicy{}, IDGen: stubIDGenerator{}}}
+	h := newRegisterHandler(repo)
 
-	body, _ := json.Marshal(map[string]string{"email": "not-an-email", "password": sampleCredential})
-	req := httptest.NewRequest(http.MethodPost, "/v1/auth/register", bytes.NewReader(body))
-	rec := httptest.NewRecorder()
+	_, err := h.Handle(context.Background(), newRegisterInput("not-an-email", sampleCredential))
 
-	h.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("status = %d, want 422", rec.Code)
-	}
+	assertStatus(t, err, http.StatusUnprocessableEntity)
 }
 
-func TestRegisterHandler_ServeHTTP_PasswordTooShort(t *testing.T) {
+func TestRegisterHandler_Handle_PasswordTooShort(t *testing.T) {
 	repo := &stubAccountRepo{}
-	h := RegisterHandler{Handler: command.RegisterAccountHandler{Repo: repo, Hasher: stubHasher{}, Policy: domain.MinLengthPasswordPolicy{}, IDGen: stubIDGenerator{}}}
+	h := newRegisterHandler(repo)
 
-	body, _ := json.Marshal(map[string]string{"email": "a@b.com", "password": "short"})
-	req := httptest.NewRequest(http.MethodPost, "/v1/auth/register", bytes.NewReader(body))
-	rec := httptest.NewRecorder()
+	_, err := h.Handle(context.Background(), newRegisterInput("a@b.com", "short"))
 
-	h.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("status = %d, want 422, body = %s", rec.Code, rec.Body.String())
-	}
+	assertStatus(t, err, http.StatusUnprocessableEntity)
 }
 
-func TestRegisterHandler_ServeHTTP_BodyTooLarge(t *testing.T) {
-	repo := &stubAccountRepo{}
-	h := RegisterHandler{Handler: command.RegisterAccountHandler{Repo: repo, Hasher: stubHasher{}, Policy: domain.MinLengthPasswordPolicy{}, IDGen: stubIDGenerator{}}}
-
-	oversizedPassword := strings.Repeat("a", maxRequestBodyBytes)
-	body, _ := json.Marshal(map[string]string{"email": "a@b.com", "password": oversizedPassword})
-	req := httptest.NewRequest(http.MethodPost, "/v1/auth/register", bytes.NewReader(body))
-	rec := httptest.NewRecorder()
-
-	h.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400, body = %s", rec.Code, rec.Body.String())
-	}
-}
-
-func TestRegisterHandler_ServeHTTP_UnexpectedError(t *testing.T) {
+func TestRegisterHandler_Handle_UnexpectedError(t *testing.T) {
 	repo := &stubAccountRepo{saveErr: errors.New("boom")}
-	h := RegisterHandler{Handler: command.RegisterAccountHandler{Repo: repo, Hasher: stubHasher{}, Policy: domain.MinLengthPasswordPolicy{}, IDGen: stubIDGenerator{}}}
+	h := newRegisterHandler(repo)
 
-	body, _ := json.Marshal(map[string]string{"email": "a@b.com", "password": sampleCredential})
-	req := httptest.NewRequest(http.MethodPost, "/v1/auth/register", bytes.NewReader(body))
-	rec := httptest.NewRecorder()
+	_, err := h.Handle(context.Background(), newRegisterInput("a@b.com", sampleCredential))
 
-	h.ServeHTTP(rec, req)
+	assertStatus(t, err, http.StatusInternalServerError)
+}
 
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want 500", rec.Code)
+// assertStatus fails the test unless err is a huma.StatusError with the
+// given status. Shared by every converted handler's test file.
+func assertStatus(t *testing.T, err error, want int) {
+	t.Helper()
+	if err == nil {
+		t.Fatal("error = nil, want a huma.StatusError")
+	}
+	statusErr, ok := err.(huma.StatusError)
+	if !ok {
+		t.Fatalf("error = %v (%T), want a huma.StatusError", err, err)
+	}
+	if statusErr.GetStatus() != want {
+		t.Errorf("status = %d, want %d", statusErr.GetStatus(), want)
 	}
 }

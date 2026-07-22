@@ -1,7 +1,7 @@
 package httpapi
 
 import (
-	"net/http"
+	"context"
 
 	"github.com/AymanKastali/iam-base/internal/app/query"
 )
@@ -10,11 +10,16 @@ type JWKSHandler struct {
 	Handler query.GetJWKSHandler
 }
 
-func (h JWKSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	doc, err := h.Handler.Handle(r.Context())
+type JWKSInput struct{}
+
+type JWKSOutput struct {
+	Body query.JWKSDocument
+}
+
+func (h JWKSHandler) Handle(ctx context.Context, input *JWKSInput) (*JWKSOutput, error) {
+	doc, err := h.Handler.Handle(ctx)
 	if err != nil {
-		respondError(w, "jwks", err)
-		return
+		return nil, mapAppError("jwks", err)
 	}
-	writeJSON(w, http.StatusOK, doc)
+	return &JWKSOutput{Body: doc}, nil
 }

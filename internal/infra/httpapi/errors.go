@@ -5,29 +5,41 @@ import (
 	"log"
 	"net/http"
 
+	"github.com/danielgtaylor/huma/v2"
+
 	"github.com/AymanKastali/iam-base/internal/app"
 )
 
 // kindedError is implemented by any app-layer error that carries a Kind and
 // a machine-readable Code (see app.Error). Handlers never name individual
-// errors — they just call respondError.
+// errors — they just call mapAppError.
 type kindedError interface {
 	error
 	Kind() app.Kind
 	Code() string
 }
 
-// respondError classifies err via kindedError and writes the matching
-// response; anything that doesn't implement it is logged and returned as a
-// generic 500. This is the single place that knows how app errors become
-// wire responses — handlers only decide when to call it.
-func respondError(w http.ResponseWriter, action string, err error) {
+// mapAppError classifies err via kindedError and returns the matching
+// huma.StatusError; anything that doesn't implement it is logged and mapped
+// to a generic 500. This is the single place that knows how app errors
+// become wire responses — handlers only decide when to call it.
+//
+// ke.Code() (e.g. "invalid_email", "email_already_registered") is carried
+// through as ErrorModel.Type — RFC 9457's slot for a stable, machine-readable
+// problem identifier, distinct from Detail's free-text message — so API
+// consumers can distinguish error causes without parsing English prose.
+func mapAppError(action string, err error) error {
 	if ke, ok := errors.AsType[kindedError](err); ok {
-		writeError(w, statusForKind(ke.Kind()), ke.Code(), ke.Error())
-		return
+		status := statusForKind(ke.Kind())
+		return &huma.ErrorModel{
+			Type:   ke.Code(),
+			Title:  http.StatusText(status),
+			Status: status,
+			Detail: ke.Error(),
+		}
 	}
 	log.Printf("%s: unexpected error: %v", action, err)
-	writeError(w, http.StatusInternalServerError, "internal_error", "internal error")
+	return huma.NewError(http.StatusInternalServerError, "internal error")
 }
 
 func statusForKind(k app.Kind) int {

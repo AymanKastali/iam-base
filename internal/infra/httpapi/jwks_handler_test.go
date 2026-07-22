@@ -2,8 +2,6 @@ package httpapi
 
 import (
 	"context"
-	"net/http"
-	"net/http/httptest"
 	"testing"
 
 	"github.com/AymanKastali/iam-base/internal/app/query"
@@ -13,17 +11,16 @@ type stubJWKSPort struct{ doc query.JWKSDocument }
 
 func (s stubJWKSPort) JWKS() query.JWKSDocument { return s.doc }
 
-func TestJWKSHandler_ServeHTTP(t *testing.T) {
+func TestJWKSHandler_Handle(t *testing.T) {
 	doc := query.JWKSDocument{Keys: []query.JWKSKey{{Kty: "RSA", Kid: "1", Alg: "RS256", Use: "sig", N: "n", E: "e"}}}
 	h := JWKSHandler{Handler: query.GetJWKSHandler{Port: stubJWKSPort{doc: doc}}}
 
-	req := httptest.NewRequest(http.MethodGet, "/.well-known/jwks.json", nil)
-	rec := httptest.NewRecorder()
+	out, err := h.Handle(context.Background(), &JWKSInput{})
 
-	h.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
+	if err != nil {
+		t.Fatalf("Handle() error = %v, want nil", err)
 	}
-	_ = context.Background()
+	if len(out.Body.Keys) != 1 || out.Body.Keys[0].Kid != "1" {
+		t.Errorf("Body = %+v, want the JWKS document unchanged", out.Body)
+	}
 }
