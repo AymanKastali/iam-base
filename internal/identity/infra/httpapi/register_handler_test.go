@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -73,5 +74,35 @@ func TestRegisterHandler_ServeHTTP_DuplicateEmail(t *testing.T) {
 
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("status = %d, want 409", rec.Code)
+	}
+}
+
+func TestRegisterHandler_ServeHTTP_InvalidEmail(t *testing.T) {
+	repo := &stubAccountRepo{}
+	h := RegisterHandler{Handler: command.RegisterAccountHandler{Repo: repo, Hasher: stubHasher{}}}
+
+	body, _ := json.Marshal(map[string]string{"email": "not-an-email", "password": sampleCredential})
+	req := httptest.NewRequest(http.MethodPost, "/v1/auth/register", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+}
+
+func TestRegisterHandler_ServeHTTP_UnexpectedError(t *testing.T) {
+	repo := &stubAccountRepo{saveErr: errors.New("boom")}
+	h := RegisterHandler{Handler: command.RegisterAccountHandler{Repo: repo, Hasher: stubHasher{}}}
+
+	body, _ := json.Marshal(map[string]string{"email": "a@b.com", "password": sampleCredential})
+	req := httptest.NewRequest(http.MethodPost, "/v1/auth/register", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", rec.Code)
 	}
 }

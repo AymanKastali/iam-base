@@ -59,3 +59,25 @@ func TestLoginHandler_ServeHTTP_InvalidCredentials(t *testing.T) {
 		t.Fatalf("status = %d, want 401", rec.Code)
 	}
 }
+
+func TestLoginHandler_ServeHTTP_DisabledAccount(t *testing.T) {
+	repo := &stubAccountRepo{}
+	registerHandler := command.RegisterAccountHandler{Repo: repo, Hasher: stubHasher{}}
+	if _, err := registerHandler.Handle(context.Background(), command.RegisterAccountCommand{Email: "a@b.com", Password: sampleCredential}); err != nil {
+		t.Fatalf("fixture register: %v", err)
+	}
+	if err := repo.saved.Disable(); err != nil {
+		t.Fatalf("fixture Disable: %v", err)
+	}
+
+	h := LoginHandler{Handler: command.LoginHandler{Repo: repo, Hasher: stubHasher{}, Issuer: stubIssuer{}}}
+	body, _ := json.Marshal(map[string]string{"email": "a@b.com", "password": sampleCredential})
+	req := httptest.NewRequest(http.MethodPost, "/v1/auth/login", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", rec.Code)
+	}
+}
