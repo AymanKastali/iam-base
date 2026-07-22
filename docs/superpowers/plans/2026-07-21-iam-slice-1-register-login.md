@@ -2479,7 +2479,7 @@ func (h RegisterHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, map[string]string{"id": string(id)})
+	writeJSON(w, http.StatusCreated, map[string]string{"id": id.String()})
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {
