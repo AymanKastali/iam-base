@@ -137,3 +137,85 @@ func TestLoginHandler_ServeHTTP_DisabledAccount(t *testing.T) {
 		t.Fatalf("status = %d, want 401", rec.Code)
 	}
 }
+
+func newLoginInput(email, password string) *LoginInput {
+	input := &LoginInput{}
+	input.Body.Email = email
+	input.Body.Password = password
+	return input
+}
+
+func TestLoginHandler_Handle_Success(t *testing.T) {
+	repo := &stubAccountRepo{}
+	registerHandler := command.RegisterAccountHandler{Repo: repo, Hasher: stubHasher{}, Policy: domain.MinLengthPasswordPolicy{}, IDGen: stubIDGenerator{}}
+	if _, err := registerHandler.Handle(context.Background(), command.RegisterAccountCommand{Email: "a@b.com", Password: sampleCredential}); err != nil {
+		t.Fatalf("fixture register: %v", err)
+	}
+
+	h := LoginHandler{Handler: command.LoginHandler{
+		Repo:            repo,
+		Hasher:          stubHasher{},
+		Issuer:          stubIssuer{},
+		RefreshRepo:     newStubRefreshTokenRepo(),
+		TokenGen:        stubTokenGenerator{nextSecret: "s", nextHash: "h"},
+		IDGen:           stubIDGenerator{},
+		Clock:           stubClock{now: time.Now()},
+		RefreshTokenTTL: 24 * time.Hour,
+	}}
+
+	out, err := h.Handle(context.Background(), newLoginInput("a@b.com", sampleCredential))
+
+	if err != nil {
+		t.Fatalf("Handle() error = %v, want nil", err)
+	}
+	if out.Body.AccessToken != "signed-jwt" {
+		t.Errorf("AccessToken = %v, want signed-jwt", out.Body.AccessToken)
+	}
+	if out.Body.RefreshToken == "" {
+		t.Error("RefreshToken missing from login response")
+	}
+}
+
+func TestLoginHandler_Handle_InvalidCredentials(t *testing.T) {
+	repo := &stubAccountRepo{}
+	h := LoginHandler{Handler: command.LoginHandler{
+		Repo:            repo,
+		Hasher:          stubHasher{},
+		Issuer:          stubIssuer{},
+		RefreshRepo:     newStubRefreshTokenRepo(),
+		TokenGen:        stubTokenGenerator{nextSecret: "s", nextHash: "h"},
+		IDGen:           stubIDGenerator{},
+		Clock:           stubClock{now: time.Now()},
+		RefreshTokenTTL: 24 * time.Hour,
+	}}
+
+	_, err := h.Handle(context.Background(), newLoginInput("missing@b.com", sampleCredential))
+
+	assertStatus(t, err, http.StatusUnauthorized)
+}
+
+func TestLoginHandler_Handle_DisabledAccount(t *testing.T) {
+	repo := &stubAccountRepo{}
+	registerHandler := command.RegisterAccountHandler{Repo: repo, Hasher: stubHasher{}, Policy: domain.MinLengthPasswordPolicy{}, IDGen: stubIDGenerator{}}
+	if _, err := registerHandler.Handle(context.Background(), command.RegisterAccountCommand{Email: "a@b.com", Password: sampleCredential}); err != nil {
+		t.Fatalf("fixture register: %v", err)
+	}
+	if err := repo.saved.Disable(); err != nil {
+		t.Fatalf("fixture Disable: %v", err)
+	}
+
+	h := LoginHandler{Handler: command.LoginHandler{
+		Repo:            repo,
+		Hasher:          stubHasher{},
+		Issuer:          stubIssuer{},
+		RefreshRepo:     newStubRefreshTokenRepo(),
+		TokenGen:        stubTokenGenerator{nextSecret: "s", nextHash: "h"},
+		IDGen:           stubIDGenerator{},
+		Clock:           stubClock{now: time.Now()},
+		RefreshTokenTTL: 24 * time.Hour,
+	}}
+
+	_, err := h.Handle(context.Background(), newLoginInput("a@b.com", sampleCredential))
+
+	assertStatus(t, err, http.StatusUnauthorized)
+}
