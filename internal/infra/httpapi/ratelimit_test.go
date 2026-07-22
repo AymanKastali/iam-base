@@ -61,6 +61,42 @@ func TestIPRateLimiter_Middleware_IsolatesByIP(t *testing.T) {
 	}
 }
 
+func TestIPRateLimiter_Allow(t *testing.T) {
+	limiter := NewIPRateLimiter(1, 1) // 1 request burst, refills slowly
+
+	if !limiter.Allow("1.2.3.4:5555") {
+		t.Fatal("first Allow() = false, want true")
+	}
+	if limiter.Allow("1.2.3.4:5555") {
+		t.Fatal("second Allow() = true, want false (burst exhausted)")
+	}
+}
+
+func TestIPRateLimiter_Allow_IsolatesByIP(t *testing.T) {
+	limiter := NewIPRateLimiter(1, 1)
+
+	if !limiter.Allow("1.2.3.4:5555") {
+		t.Fatal("IP A first Allow() = false, want true")
+	}
+	if limiter.Allow("1.2.3.4:5555") {
+		t.Fatal("IP A second Allow() = true, want false")
+	}
+	if !limiter.Allow("5.6.7.8:9999") {
+		t.Fatal("IP B first Allow() = false, want true — must not be throttled by IP A's limiter")
+	}
+}
+
+func TestIPRateLimiter_Allow_HandlesAddrWithoutPort(t *testing.T) {
+	limiter := NewIPRateLimiter(1, 1)
+
+	if !limiter.Allow("not-a-host-port") {
+		t.Fatal("first Allow() = false, want true")
+	}
+	if limiter.Allow("not-a-host-port") {
+		t.Fatal("second Allow() = true, want false")
+	}
+}
+
 func TestIPRateLimiter_EvictStale(t *testing.T) {
 	limiter := NewIPRateLimiter(1, 1)
 	limiter.limiterFor("1.2.3.4")
