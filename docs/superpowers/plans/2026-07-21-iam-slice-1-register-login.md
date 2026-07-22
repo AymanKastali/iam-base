@@ -426,7 +426,7 @@ git commit -m "feat(domain): add Email and Credential value objects"
 
 **Interfaces:**
 - Consumes: `domain.Email`, `domain.Credential` (Task 2).
-- Produces: the shared domain kernel (`ValueObject[T]`, `Entity[ID]`, `AggregateRoot[ID]`, `Event`) described in Global Constraints; `domain.AccountID` (self-validating value object: `NewAccountID(raw string) (AccountID, error)`, `(AccountID) String() string`, `(AccountID) Equals(other AccountID) bool`); `domain.AccountStatus` (`int`, consts `StatusActive`, `StatusDisabled`, `(AccountStatus) String() string` and `ParseAccountStatus(raw string) (AccountStatus, error)` — the persistence round-trip pair infra adapters use instead of hand-rolling their own conversion); `domain.AccountRegistered`/`AccountDisabled`/`AccountActivated` (events, all in `events.go`); `domain.Account` (embeds `AggregateRoot[AccountID]` — `ID()`/`Equals()` inherited, not redeclared; `Register(id AccountID, email Email, credential Credential) (*Account, error)` trusts `id` is already valid and records an `AccountRegistered` event; `Reconstitute(id AccountID, email Email, credential Credential, status AccountStatus) *Account` rehydrates an account already known to exist — used by the repository adapter, raises no event, and preserves whatever status was persisted (unlike `Register`, which always starts `StatusActive`); `(*Account) Email/Credential/Status()`, `(*Account) IsActive() bool`; **guarded state transitions**, not bare setters — `Disable() error` and `Activate() error` each reject the illegal no-op transition (`ErrAccountAlreadyDisabled`/`ErrAccountAlreadyActive`) and record their own past-tense event on success; `EnsureActive() error` encapsulates the login-eligibility rule — the app layer asks the aggregate, it never inspects `IsActive()` itself and decides the policy inline); `domain.ErrInvalidAccountID`/`ErrAccountAlreadyDisabled`/`ErrAccountAlreadyActive`/`ErrInvalidAccountStatus`.
+- Produces: the shared domain kernel (`ValueObject[T]`, `Entity[ID]`, `AggregateRoot[ID]`, `Event`) described in Global Constraints; `domain.AccountID` (self-validating value object: `NewAccountID(raw string) (AccountID, error)`, `(AccountID) String() string`, `(AccountID) Equals(other AccountID) bool`); `domain.AccountStatus` (`int`, consts `StatusActive`, `StatusDisabled`, `(AccountStatus) String() string` and `ParseAccountStatus(raw string) (AccountStatus, error)` — the persistence round-trip pair infra adapters use instead of hand-rolling their own conversion); `domain.AccountRegistered`/`AccountDisabled`/`AccountActivated` (events, all in `events.go`); `domain.Account` (embeds `AggregateRoot[AccountID]` — `ID()`/`Equals()` inherited, not redeclared; `Register(id AccountID, email Email, credential Credential) (*Account, error)` trusts `id` is already valid and records an `AccountRegistered` event; `Reconstitute(id AccountID, email Email, credential Credential, status AccountStatus) *Account` rehydrates an account already known to exist — used by the repository adapter, raises no event, and preserves whatever status was persisted (unlike `Register`, which always starts `StatusActive`); `(*Account) Email/Credential/Status()`, `(*Account) IsActive() bool`; **guarded state transitions**, not bare setters — `Disable() error` and `Activate() error` each reject the illegal no-op transition (`ErrAccountAlreadyDisabled`/`ErrAccountAlreadyActive`) and record their own past-tense event on success; `Login() error` encapsulates the login-eligibility rule — the app layer asks the aggregate, it never inspects `IsActive()` itself and decides the policy inline); `domain.ErrInvalidAccountID`/`ErrAccountAlreadyDisabled`/`ErrAccountAlreadyActive`/`ErrInvalidAccountStatus`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -719,18 +719,18 @@ func TestAccount_Activate_RecordsAccountActivatedEvent(t *testing.T) {
 	}
 }
 
-func TestAccount_EnsureActive(t *testing.T) {
+func TestAccount_Login(t *testing.T) {
 	acc := newTestAccount(t)
 
-	if err := acc.EnsureActive(); err != nil {
-		t.Errorf("EnsureActive() on a new account = %v, want nil", err)
+	if err := acc.Login(); err != nil {
+		t.Errorf("Login() on a new account = %v, want nil", err)
 	}
 
 	if err := acc.Disable(); err != nil {
 		t.Fatalf("Disable() error = %v, want nil", err)
 	}
-	if err := acc.EnsureActive(); !errors.Is(err, ErrAccountDisabled) {
-		t.Errorf("EnsureActive() on a disabled account = %v, want ErrAccountDisabled", err)
+	if err := acc.Login(); !errors.Is(err, ErrAccountDisabled) {
+		t.Errorf("Login() on a disabled account = %v, want ErrAccountDisabled", err)
 	}
 }
 ```
@@ -975,7 +975,7 @@ func (a *Account) Status() AccountStatus  { return a.status }
 func (a *Account) IsActive() bool         { return a.status == StatusActive }
 
 // Disable marks the account disabled — a disabled account can no longer
-// authenticate (see EnsureActive). Disabling an already-disabled account is
+// authenticate (see Login). Disabling an already-disabled account is
 // rejected as an illegal transition, not a silent no-op.
 func (a *Account) Disable() error {
 	if a.status == StatusDisabled {
@@ -998,10 +998,12 @@ func (a *Account) Activate() error {
 	return nil
 }
 
-// EnsureActive enforces the login-eligibility invariant: a disabled account
-// cannot authenticate. Callers check this instead of inspecting IsActive
-// themselves, so the rule lives on the aggregate, not the caller.
-func (a *Account) EnsureActive() error {
+// Login enforces the login-eligibility invariant: a disabled account cannot
+// authenticate. Callers check this instead of inspecting IsActive
+// themselves, so the rule lives on the aggregate, not the caller. Today
+// this only checks status; recording a last-login timestamp and
+// failed-attempt lockout are expected to land here as this grows.
+func (a *Account) Login() error {
 	if !a.IsActive() {
 		return ErrAccountDisabled
 	}
@@ -1544,6 +1546,8 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"encoding/base64"
+	"math/big"
 	"testing"
 	"time"
 
@@ -1599,6 +1603,23 @@ func TestRSAIssuer_JWKS(t *testing.T) {
 	k := doc.Keys[0]
 	if k.Kty != "RSA" || k.Alg != "RS256" || k.Kid != "1" || k.N == "" || k.E == "" {
 		t.Errorf("JWKS key = %+v, want RSA/RS256/1 with non-empty n, e", k)
+	}
+
+	nBytes, err := base64.RawURLEncoding.DecodeString(k.N)
+	if err != nil {
+		t.Fatalf("decode n: %v", err)
+	}
+	eBytes, err := base64.RawURLEncoding.DecodeString(k.E)
+	if err != nil {
+		t.Fatalf("decode e: %v", err)
+	}
+	n := new(big.Int).SetBytes(nBytes)
+	e := new(big.Int).SetBytes(eBytes)
+	if n.Cmp(priv.N) != 0 {
+		t.Error("JWKS n does not match the issuer's actual public key modulus")
+	}
+	if e.Int64() != int64(priv.E) {
+		t.Errorf("JWKS e = %v, want %v", e.Int64(), priv.E)
 	}
 }
 ```
@@ -2056,7 +2077,7 @@ func (h LoginHandler) Handle(ctx context.Context, cmd LoginCommand) (LoginResult
 	if err != nil {
 		return LoginResult{}, ErrInvalidCredentials
 	}
-	if err := account.EnsureActive(); err != nil {
+	if err := account.Login(); err != nil {
 		return LoginResult{}, err
 	}
 	ok, err := h.Hasher.Verify(account.Credential(), cmd.Password)
