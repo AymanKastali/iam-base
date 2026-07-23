@@ -7,7 +7,7 @@ import (
 
 func TestLoad_Defaults(t *testing.T) {
 	t.Setenv("DATABASE_URL", "postgres://user:pass@localhost:5432/iam?sslmode=disable")
-	t.Setenv("JWT_PRIVATE_KEY_PATH", "/etc/iam/private.pem")
+	t.Setenv("JWT_KEYS_DIR", "/etc/iam")
 
 	cfg, err := Load()
 	if err != nil {
@@ -19,26 +19,40 @@ func TestLoad_Defaults(t *testing.T) {
 	if cfg.AccessTokenTTL != 15*time.Minute {
 		t.Errorf("AccessTokenTTL = %v, want 15m", cfg.AccessTokenTTL)
 	}
-	if cfg.JWTKeyID != "1" {
-		t.Errorf("JWTKeyID = %q, want %q", cfg.JWTKeyID, "1")
+	if cfg.JWTActiveKeyID != "1" {
+		t.Errorf("JWTActiveKeyID = %q, want %q", cfg.JWTActiveKeyID, "1")
 	}
 	if cfg.RateLimitRPS != 5 || cfg.RateLimitBurst != 10 {
 		t.Errorf("rate limit = %v/%v, want 5/10", cfg.RateLimitRPS, cfg.RateLimitBurst)
 	}
 }
 
+func TestLoad_JWTActiveKeyID_Override(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://user:pass@localhost:5432/iam?sslmode=disable")
+	t.Setenv("JWT_KEYS_DIR", "/etc/iam")
+	t.Setenv("JWT_ACTIVE_KEY_ID", "2")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v, want nil", err)
+	}
+	if cfg.JWTActiveKeyID != "2" {
+		t.Errorf("JWTActiveKeyID = %q, want %q", cfg.JWTActiveKeyID, "2")
+	}
+}
+
 func TestLoad_MissingRequired(t *testing.T) {
 	t.Setenv("DATABASE_URL", "")
-	t.Setenv("JWT_PRIVATE_KEY_PATH", "")
+	t.Setenv("JWT_KEYS_DIR", "")
 
 	if _, err := Load(); err == nil {
-		t.Fatal("Load() error = nil, want error for missing DATABASE_URL/JWT_PRIVATE_KEY_PATH")
+		t.Fatal("Load() error = nil, want error for missing DATABASE_URL/JWT_KEYS_DIR")
 	}
 }
 
 func TestLoad_Defaults_IncludesRefreshTokenTTL(t *testing.T) {
 	t.Setenv("DATABASE_URL", "postgres://user:pass@localhost:5432/iam?sslmode=disable")
-	t.Setenv("JWT_PRIVATE_KEY_PATH", "/etc/iam/private.pem")
+	t.Setenv("JWT_KEYS_DIR", "/etc/iam")
 
 	cfg, err := Load()
 	if err != nil {
@@ -51,7 +65,7 @@ func TestLoad_Defaults_IncludesRefreshTokenTTL(t *testing.T) {
 
 func TestLoad_RefreshTokenTTL_Override(t *testing.T) {
 	t.Setenv("DATABASE_URL", "postgres://user:pass@localhost:5432/iam?sslmode=disable")
-	t.Setenv("JWT_PRIVATE_KEY_PATH", "/etc/iam/private.pem")
+	t.Setenv("JWT_KEYS_DIR", "/etc/iam")
 	t.Setenv("REFRESH_TOKEN_TTL", "1h")
 
 	cfg, err := Load()

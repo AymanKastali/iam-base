@@ -11,26 +11,26 @@ import (
 )
 
 type Config struct {
-	Port              string
-	DatabaseURL       string
-	JWTPrivateKeyPath string
-	JWTKeyID          string
-	AccessTokenTTL    time.Duration
-	RefreshTokenTTL   time.Duration
-	RateLimitRPS      float64
-	RateLimitBurst    int
+	Port            string
+	DatabaseURL     string
+	JWTKeysDir      string
+	JWTActiveKeyID  string
+	AccessTokenTTL  time.Duration
+	RefreshTokenTTL time.Duration
+	RateLimitRPS    float64
+	RateLimitBurst  int
 }
 
 func Load() (Config, error) {
 	cfg := Config{
-		Port:              getEnv("PORT", "8080"),
-		DatabaseURL:       os.Getenv("DATABASE_URL"),
-		JWTPrivateKeyPath: os.Getenv("JWT_PRIVATE_KEY_PATH"),
-		JWTKeyID:          getEnv("JWT_KEY_ID", "1"),
-		AccessTokenTTL:    15 * time.Minute,
-		RefreshTokenTTL:   30 * 24 * time.Hour,
-		RateLimitRPS:      5,
-		RateLimitBurst:    10,
+		Port:            getEnv("PORT", "8080"),
+		DatabaseURL:     os.Getenv("DATABASE_URL"),
+		JWTKeysDir:      os.Getenv("JWT_KEYS_DIR"),
+		JWTActiveKeyID:  getEnv("JWT_ACTIVE_KEY_ID", "1"),
+		AccessTokenTTL:  15 * time.Minute,
+		RefreshTokenTTL: 30 * 24 * time.Hour,
+		RateLimitRPS:    5,
+		RateLimitBurst:  10,
 	}
 
 	if ttl := os.Getenv("ACCESS_TOKEN_TTL"); ttl != "" {
@@ -65,8 +65,8 @@ func Load() (Config, error) {
 	if cfg.DatabaseURL == "" {
 		return Config{}, errors.New("DATABASE_URL is required")
 	}
-	if cfg.JWTPrivateKeyPath == "" {
-		return Config{}, errors.New("JWT_PRIVATE_KEY_PATH is required")
+	if cfg.JWTKeysDir == "" {
+		return Config{}, errors.New("JWT_KEYS_DIR is required")
 	}
 	return cfg, nil
 }

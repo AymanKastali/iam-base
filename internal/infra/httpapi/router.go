@@ -14,6 +14,7 @@ const maxRequestBodyBytes = 1 << 16 // 64KB
 
 func NewRouter(register RegisterHandler, login LoginHandler, refresh RefreshHandler, logout LogoutHandler, jwks JWKSHandler, limiter *IPRateLimiter) http.Handler {
 	mux := chi.NewMux()
+	mux.Get("/healthz", HealthzHandler)
 
 	config := huma.DefaultConfig("iam-base", "1.0.0")
 	config.CreateHooks = nil // keep success response bodies free of Huma's injected "$schema" field

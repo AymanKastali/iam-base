@@ -120,3 +120,15 @@ func TestNewRouter_RefreshMissingToken_StillUniform401(t *testing.T) {
 		t.Errorf("status = %d, want 401, body = %s", rec.Code, rec.Body.String())
 	}
 }
+
+func TestNewRouter_ServesHealthz(t *testing.T) {
+	router := newTestRouter(NewIPRateLimiter(1000, 1000))
+
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("GET /healthz status = %d, want 200", rec.Code)
+	}
+}

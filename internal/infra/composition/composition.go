@@ -46,7 +46,7 @@ func Build(ctx context.Context, cfg config.Config) (*Application, error) {
 		return nil, err
 	}
 
-	privateKey, err := jwt.LoadRSAPrivateKey(cfg.JWTPrivateKeyPath)
+	keys, err := jwt.LoadRSAPrivateKeys(cfg.JWTKeysDir)
 	if err != nil {
 		pool.Close()
 		return nil, err
@@ -55,7 +55,11 @@ func Build(ctx context.Context, cfg config.Config) (*Application, error) {
 	repo := postgres.NewAccountRepository(pool)
 	refreshTokenRepo := postgres.NewRefreshTokenRepository(pool)
 	hasher := passwordhash.Argon2IDHasher{}
-	issuer := jwt.NewRSAIssuer(privateKey, cfg.JWTKeyID, cfg.AccessTokenTTL, systemClock{})
+	issuer, err := jwt.NewRSAIssuer(keys, cfg.JWTActiveKeyID, cfg.AccessTokenTTL, systemClock{})
+	if err != nil {
+		pool.Close()
+		return nil, err
+	}
 	tokenGen := refreshtoken.SHA256Generator{}
 	idGen := idgen.UUIDGenerator{}
 	clock := systemClock{}
