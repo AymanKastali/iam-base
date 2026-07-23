@@ -1,4 +1,3 @@
-# deployments/docker-compose.yml
 services:
   postgres:
     image: postgres:16-alpine
@@ -13,6 +12,7 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+    restart: unless-stopped
 
   identity:
     build:
@@ -24,8 +24,8 @@ services:
     environment:
       PORT: "8080"
       DATABASE_URL: "postgres://iam:iam@postgres:5432/iam?sslmode=disable"
-      JWT_PRIVATE_KEY_PATH: "/etc/iam/private.pem"
-      JWT_KEY_ID: "1"
+      JWT_KEYS_DIR: "/etc/iam"
+      JWT_ACTIVE_KEY_ID: "1"
       ACCESS_TOKEN_TTL: "15m"
       REFRESH_TOKEN_TTL: "720h"
       RATE_LIMIT_RPS: "5"
@@ -34,6 +34,12 @@ services:
       - ./keys:/etc/iam:ro
     ports:
       - "8080:8080"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
 
 volumes:
   iam_pg_data:
